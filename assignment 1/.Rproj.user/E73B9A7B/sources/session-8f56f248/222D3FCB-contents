@@ -1,0 +1,51 @@
+---
+title: "assignment start"
+author: "Sören Twietmeyer"
+date: "`r Sys.Date()`"
+output: html_document
+---
+# EC349 Assignment 1: Analysis of Yelp Data
+
+## Project Plan: Outline
+
+
+
+
+
+```{r setup, include=FALSE}
+#Set Directory as appropriate
+#setwd("C/...")
+library(jsonlite)
+library(tidyverse)
+library(dplyr)
+```
+
+```{r}
+#Pre-Processing Yelp Academic Data for the Assignment
+#Clear
+cat("\014")  
+rm(list=ls())
+
+#Load Different Data
+business_data <- stream_in(file("../data/yelp_academic_dataset_business.json")) #note that stream_in reads the json lines (as the files are json lines, not json)
+review_data  <- stream_in(file("../data/yelp_academic_dataset_review.json")) #note that stream_in reads the json lines (as the files are json lines, not json)
+checkin_data  <- stream_in(file("../data/yelp_academic_dataset_checkin.json")) #note that stream_in reads the json lines (as the files are json lines, not json)
+user_data <- stream_in(file("../data/yelp_academic_dataset_user.json")) #note that stream_in reads the json lines (as the files are json lines, not json)
+tip_data  <- stream_in(file("../data/yelp_academic_dataset_tip.json")) #note that stream_in reads the json lines (as the files are json lines, not json)
+
+```
+
+```{r Data exploration}
+dim(business_data)
+dim(review_data)
+dim(checkin_data)
+dim(user_data)
+dim(tip_data)
+
+```
+
+
+## Methodology
+
+## Project Challenges
+
