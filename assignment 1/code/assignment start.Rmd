@@ -32,6 +32,7 @@ library(tm)
 library(hexbin)
 library(sandwich)
 library(lmtest)
+library(doParallel)
 getwd()
 source("../code/assignment_functions.R")
 ```
@@ -72,9 +73,9 @@ length(unique(user_data_small$user_id))
 
 str(tip_data)
 
-## use hexbin to plot correlation between different columns
-
 ```
+The data exploration phase showed the check in data is not useful for our purpose given the lack of variation in the number of check ins between business. The business data set includes useful information, however, some columns suffer from large shares of missing data, which negatively impacts its usefulness. Having a lot of missing values means that, if we want to include the variables, we need to drop a lot of values, leaving us with too few reviews and probably highly biased results given that the lack of data is probably not random. The tip data only includes additional comments made from a user to a business and can be omitted given the inclusion of the comments of the reviews from the review data set. 
+
 ### Data Description
 + data documentation: https://www.yelp.com/dataset/documentation/main
 + review_data: contains review_id, user_id, business_id, stars given to a business(0-5), useful (number of useful votes received), cool (number of cool votes received), funny (number of funny votes received)
@@ -87,9 +88,14 @@ We now need to clean up the data and prepare one dataframe that inlcudes all the
 ```{r data manipulation}
 # review data:
 # slice to make testing easier
-text_test_df <- review_data_small[1:200000, ]
+text_test_df <- review_data_small[1:600000, ]
+
+# Register parallel backend with the number of cores you want to use
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
 ## prepare text for analysis:
-corpus <- Corpus(VectorSource(text_test_df$text))
+corpus <- Corpus(VectorSource(review_data_small$text))
 
 ## Preprocess the text: remove punctuation and stopwords
 corpus <- tm_map(corpus, tolower)
@@ -98,43 +104,33 @@ corpus <- tm_map(corpus, removeWords, stopwords("english"))
 corpus <- tm_map(corpus, stemDocument)
 
 frequencies = DocumentTermMatrix(corpus)
-sparse = removeSparseTerms(frequencies, 0.995)
+sparse = removeSparseTerms(frequencies, 0.99)
 tSparse = as.data.frame(as.matrix(sparse))
-## we are now left with a matrix that could then be merged onto the other df because the order remains the same, i.e. row order is the same
 
-text_test_df$text_cleaned <- sapply(corpus, as.character)
+# Close the parallel backend
+stopCluster(cl)
+
+## we are now left with a matrix that could then be merged onto the other df because the order remains the same, i.e. row order is the same
+tSparse$review_id <- review_data_small$review_id
 
 ## business data
-cols_keep_business_data <- empty_rows_business_data %>% dplyr::filter(`EmptyRows` < 20000 & !Column %in% c('name', 'address', 'latitude', 'longitude'))
+cols_keep_business_data <- empty_rows_business_data %>% dplyr::filter(`EmptyRows` < 35000 & !Column %in% c('name', 'address', 'latitude', 'longitude'))
 
 ## tip data:
 num_comments_by_business <- tip_data %>% group_by(business_id) %>% summarise(total_comments_business = n())
 
 # user data:
-user_data_selected <- user_data_small  %>% mutate(yelping_since_weeks = round(as.numeric(difftime("2023-12-31 00:00:00", yelping_since, units = "weeks")), digits = 0), num_friends = ifelse(friends != "None", sapply(strsplit(friends, ","), function(x) length(x)), 0), total_compliments = select(., starts_with("compliment_")) %>% rowSums(na.rm = TRUE)) %>% select(-c(name, yelping_since))
+user_data_selected <- user_data_small  %>% mutate(yelping_since_weeks = round(as.numeric(difftime("2023-12-31 00:00:00", yelping_since, units = "weeks")), digits = 0), num_friends = ifelse(friends != "None", sapply(strsplit(friends, ","), function(x) length(x)), 0), total_compliments = select(., starts_with("compliment_")) %>% rowSums(na.rm = TRUE)) %>% mutate(was_elite = ifelse(nchar(elite) > 1, 1, 0))%>%  select(-c(name, yelping_since, friends, elite))# explain why you aggregated compliments instead of using each individually
 
 # merge other data sets onto review data which is the main one:
-review_data_combined <- review_data_small %>% left_join(business_data[, cols_keep_business_data$Column], by = 'business_id', suffix = c('_review', '_business')) %>% left_join(user_data_selected, by = 'user_id', suffix = c('_review', '_user')) %>% left_join(num_comments_by_business, by = 'business_id')
+review_data_combined <- review_data_small %>% left_join(business_data[, cols_keep_business_data$Column], by = 'business_id', suffix = c('_review', '_business')) %>% left_join(user_data_selected, by = 'user_id', suffix = c('_review', '_user')) %>% left_join(num_comments_by_business, by = 'business_id') %>% left_join(tSparse, by = 'review_id', suffix = c("_review", ""))
+
+# save the dataframe so that we don't have to generate it over and over again
+write_csv(review_data_combined, "../data/review_data_combined.csv")
+
 view(count_empty_rows(review_data_combined))
 
 ```
-### Data Structure
-1. What data structure is required for our prediction?
-- one test and one training dataset
-- test has 10,000 entries
-- how do we deal with multiple reviews?
-- what is the structure of the data? i.e. based on individual i and business j?
-
-2. What can be added from which datasets?
-- main dataset: review data small
-- additions from other datasets: 
-2.1 average rating of business (in business data), average rating customer gives (in user_data_small)
-2.2 check in data: number of checkins made on a business
-2.3 review data/ tip data: number of reviews/ comments given to a business, quality of tips given to a business by text content + weigthed by reactions
-2.4 business data: all cols without too many missing values
-- is using means even allowed? what does the test data set need to look like? can we add new information to that too?
-2.5 user data: num friends, yelping since in month, useful, funny, cool, elite, fans, average_stars, maybe compliment data
-
 
 ```{r further data exploration}
 # investigate relationships between different columns and stars_review
@@ -163,12 +159,10 @@ fans_count_plot <- trend_plot("fans") ## slight positive correlation
 compliments_count_plot <- trend_plot("total_compliments") ## slight positive correlation
 
 yelp_since_plot <- trend_plot("yelping_since_weeks")
-
-
 ```
 
 ```{r test and training set generation}
-final_dataset <- review_data_combined %>% select(-c("date"))
+final_dataset <- review_data_combined %>% select(-c("date", "text", starts_with("compliment_")))
 
 #Split data into test and training
 set.seed(1)
@@ -188,13 +182,13 @@ data_test_y <-data_test[,c("stars_review")]
 
 ```{r modelling and performance testing}
 ##Linear Regression Model of stars given for a review as a function of user, business, and review characteristics
-lm_stars<- lm(stars_review ~ user_id, data = data_train)
+lm_stars<- lm(stars_review ~ state + num_friends + total_compliments, data = data_train)
 
 #Review the results
 summary(lm_stars)
 
 #Prediction to test data
-lm_stars_predict<-predict(lm_cars, newdata = data_test[,-c("stars_review")])
+lm_stars_predict<-predict(lm_cars, newdata = data_test[,!colnames(data_test) %in% c("stars_review")])
 
 #Empirical MSE in TEST data
 lm_stars_test_mse<-mean((lm_stars_predict-data_test$stars_review)^2)
@@ -202,53 +196,29 @@ lm_stars_test_mse<-mean((lm_stars_predict-data_test$stars_review)^2)
 coeftest(lm_stars, vcov = vcovHC(lm_stars, type="HC3")) # what is this for? says for robust se
 
 ## LASSO and Ridge
-shrinkage_estimator_computation <- function(lasso) {
-    cv_out <- cv.glmnet(as.matrix(data_train_x), as.matrix(data_train_y), alpha = lasso, nfolds = 3) # adapt the number of folds
-    cv_out_plot <- plot(cv_out)
-    lambda_cv <- cv_out$lambda.min
+ridge_results <- shrinkage_estimator_computation(0, data_train_x, data_train_y, data_test_x, data_test_y)
+cv_out_ridge <- ridge_results[[1]]
+plot_cv_out_ridge <- ridge_results[[2]]
+lambda_ridge_cv<- ridge_results[[3]]
+ridge_model<- ridge_results[[4]]
+ridge_predictions<- ridge_results[[5]]
+ridge_mse <- ridge_results[[6]]
 
-    #Re-Estimate Ridge with lambda chosen by Cross validation
-    model<-glmnet(data_train_x, data_train_y, alpha = lasso, lambda = lambda_cv, thresh = 1e-12) # what does the thresh mean?
-
-    #Fit on Test Data
-    predictions <- predict(ridge_model, s = lambda_ridge_cv, newx = as.matrix(data_test_x))
-    mse <- mean((ridge_predictions - data_test_y) ^ 2)
-    
-    results <- list(cv_out, cv_out_plot, lambda_cv, model, predictions, mse)
-    return(results)
-}
-
-#Ridge with Cross-Validation 
-cv_out_ridge <- cv.glmnet(as.matrix(data_train_x), as.matrix(data_train_y), alpha = 0, nfolds = 3) # adapt the number of folds
-plot(cv_out_ridge)
-lambda_ridge_cv <- cv_out_ridge$lambda.min
-
-#Re-Estimate Ridge with lambda chosen by Cross validation
-ridge_model<-glmnet(data_train_x, data_train_y, alpha = 0, lambda = lambda_ridge_cv, thresh = 1e-12) # what does the thresh mean?
-
-#Fit on Test Data
-ridge_predictions <- predict(ridge_model, s = lambda_ridge_cv, newx = as.matrix(data_test_x))
-ridge_mse <- mean((ridge_predictions - data_test_y) ^ 2)
 
 #LASSO with Cross-Validation
-cv_out_lasso <- cv.glmnet(as.matrix(data_train_x), as.matrix(data_train_y), alpha = 1, nfolds = 3) # adapt the number of folds
-plot(cv_out_lasso)
-lambda_LASSO_cv <- cv_out_lasso$lambda.min
-
-#Re-Estimate LASSO with lambda chosen by Cross validation
-lasso_model <- glmnet(data_train_x, data_train_y, alpha = 1, lambda = lambda_LASSO_cv, thresh = 1e-12)
-coef(lasso_model) #note that some parameter estimates are set to 0 --> Model selection!
-
-#Fit on Test Data
-lasso_predictions <- predict(lasso_model, s = lambda_LASSO_cv, newx = as.matrix(data_test_x))
-lasso_mse <- mean((lasso_predictions - data_test_y) ^ 2) #Note how it outperforms OLS
+lasso_results <- shrinkage_estimator_computation(1, data_train_x, data_train_y, data_test_x, data_test_y)
+cv_out_lasso <- lasso_results[[1]]
+plot_cv_out_lasso <- lasso_results[[2]]
+lambda_lasso_cv<- lasso_results[[3]]
+lasso_model<- lasso_results[[4]]
+lasso_predictions<- lasso_results[[5]]
+lasso_mse <- lasso_results[[6]]
 
 ```
 
 ```{r model comparison with adapted data}
 ## Comparison of LASSO and ridge with frequency matrix of words replaced by binary (used/ not used) matrix
-columns_to_process <- c("belli")
-adapted_df <- final_dataset %>% mutate_at(vars(columns_to_process), funs(ifelse(. > 0, 1, 0)))
+adapted_df <- final_dataset %>% mutate_at(vars(colnames(tSparse)), list(~ifelse(. > 0, 1, 0)))
 # generate new training and test datasets
 data_train_binary <-adapted_df[train,]
 
@@ -263,30 +233,23 @@ data_test_binary_x <-data_test_binary[, !colnames(data_test_binary) %in% c("star
 data_test_binary_y <-data_test_binary[,c("stars_review")]
 
 # application on LASSO and Ridge
-cv_out_ridge_binary <- cv.glmnet(as.matrix(data_train_binary_x), as.matrix(data_train_binary_y), alpha = 0, nfolds = 3) # adapt the number of folds
-plot(cv_out_ridge_binary)
-lambda_ridge_cv_binary <- cv_out_ridge_binary$lambda.min
+ridge_results_binary <- shrinkage_estimator_computation(0, data_train_binary_x, data_train_binary_y, data_test_binary_x, data_test_y)
+cv_out_ridge_binary <- ridge_results_binary[[1]]
+plot_cv_out_ridge_binary <- ridge_results_binary[[2]]
+lambda_ridge_cv_binary <- ridge_results_binary[[3]]
+ridge_model_binary <- ridge_results_binary[[4]]
+ridge_predictions_binary <- ridge_results_binary[[5]]
+ridge_mse_binary <- ridge_results_binary[[6]]
 
-#Re-Estimate Ridge with lambda chosen by Cross validation
-ridge_model_binary<-glmnet(data_train_binary_x, data_train_binary_y, alpha = 0, lambda = lambda_ridge_cv_binary, thresh = 1e-12) # what does the thresh mean?
-
-#Fit on Test Data
-ridge_predictions_binary <- predict(ridge_model_binary, s = lambda_ridge_cv_binary, newx = as.matrix(data_test_binary_x))
-ridge_mse_binary_binary <- mean((ridge_predictions_binary - data_test_binary_y) ^ 2)
 
 #LASSO with Cross-Validation
-cv_out_lasso_binary <- cv.glmnet(as.matrix(data_train_binary_x), as.matrix(data_train_binary_y), alpha = 1, nfolds = 3) # adapt the number of folds
-plot(cv_out_lasso_binary)
-lambda_LASSO_cv_binary <- cv_out_lasso_binary$lambda.min
-
-#Re-Estimate LASSO with lambda chosen by Cross validation
-lasso_model_binary <- glmnet(data_train_binary_x, data_train_binary_y, alpha = 1, lambda = lambda_LASSO_cv_binary, thresh = 1e-12)
-coef(lasso_model_binary) #note that some parameter estimates are set to 0 --> Model selection!
-
-#Fit on Test Data
-lasso_predictions_binary <- predict(lasso_model_binary, s = lambda_LASSO_cv_binary, newx = as.matrix(data_test_binary_x))
-lasso_mse_binary <- mean((lasso_predictions_binary - data_test_binary_y) ^ 2) #Note how it outperforms OLS
-
+lasso_results_binary <- shrinkage_estimator_computation(1, data_train_binary_x, data_train_y, data_test_binary_x, data_test_binary_y)
+cv_out_lasso_binary <- lasso_results_binary[[1]]
+plot_cv_out_lasso_binary <- lasso_results_binary[[2]]
+lambda_lasso_cv_binary <- lasso_results_binary[[3]]
+lasso_model_binary <- lasso_results_binary[[4]]
+lasso_predictions_binary <- lasso_results_binary[[5]]
+lasso_mse_binary <- lasso_results_binary[[6]]
 ```
 
 ## Methodology
