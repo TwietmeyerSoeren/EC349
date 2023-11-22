@@ -4,27 +4,294 @@ author: "Sören Twietmeyer"
 date: "`r Sys.Date()`"
 output: html_document
 ---
+<style>
+body {
+text-align: justify}
+</style>
+# EC349 Assignment 1: Analysis of Yelp Data
+
+## Task outline: 
+Predict the rating of user i for business j as the number of stars given
+## Project Plan: Outline
+1. Business and goal understanding
+2. Analytic Approach
++ simple relationships between variables
++ clustering of variables
++ might have to go to data cleaning first and then come back again
+3. Data requirements
+4. Data preparation
+
 
 ```{r setup, include=FALSE}
-#Set Directory as appropriate
-#setwd("C/...")
+library(conflicted)
 library(jsonlite)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(tm)
+library(hexbin)
+library(sandwich)
+library(lmtest)
+getwd()
+source("../code/assignment_functions.R")
 ```
 
+```{r Load data}
+# Load Different Data
+business_data <- stream_in(file("../data/yelp_academic_dataset_business.json"))
+business_data_unnested <- unnest(business_data, attributes)
+#review_data  <- stream_in(file("../data/yelp_academic_dataset_review.json"))
+checkin_data  <- stream_in(file("../data/yelp_academic_dataset_checkin.json"))
+#user_data <- stream_in(file("../data/yelp_academic_dataset_user.json"))
+tip_data  <- stream_in(file("../data/yelp_academic_dataset_tip.json"))
 
-```{r}
-#Pre-Processing Yelp Academic Data for the Assignment
-#Clear
-cat("\014")  
-rm(list=ls())
+# Load smaller data sets for comparative purposes and easier testing
+load("../data/yelp_review_small.Rda")
+load("../data/yelp_user_small.Rda")
 
-
-#Load Different Data
-business_data <- stream_in(file("../data/yelp_academic_dataset_business.json")) #note that stream_in reads the json lines (as the files are json lines, not json)
-review_data  <- stream_in(file("../data/yelp_academic_dataset_review.json")) #note that stream_in reads the json lines (as the files are json lines, not json)
-checkin_data  <- stream_in(file("../data/yelp_academic_dataset_checkin.json")) #note that stream_in reads the json lines (as the files are json lines, not json)
-user_data <- stream_in(file("../data/yelp_academic_dataset_user.json")) #note that stream_in reads the json lines (as the files are json lines, not json)
-tip_data  <- stream_in(file("../data/yelp_academic_dataset_tip.json")) #note that stream_in reads the json lines (as the files are json lines, not json)
 
 ```
+
+```{r Data exploration}
+# business data
+str(business_data_unnested)
+empty_rows_business_data <- count_empty_rows(business_data_unnested)
+length(unique(business_data_unnested$business_id))
+
+# review data
+str(review_data_small)
+length(unique(review_data_small$review_id))
+
+# check in data
+str(checkin_data)
+num_checkins_by_business <- checkin_data  %>% group_by(business_id) %>% summarise(total_checkins = n()) %>% dplyr::filter(total_checkins > 1)
+
+# user data
+str(user_data_small)
+length(unique(user_data_small$user_id))
+
+str(tip_data)
+
+## use hexbin to plot correlation between different columns
+
+```
+### Data Description
++ data documentation: https://www.yelp.com/dataset/documentation/main
++ review_data: contains review_id, user_id, business_id, stars given to a business(0-5), useful (number of useful votes received), cool (number of cool votes received), funny (number of funny votes received)
++ business_data: location, avg. rating, number of reviews, open/ closed, attributes such as takeout and parking, category i.e. mexican, japanese etc., opening hours
++ user_data: name, friends, review count, number of useful, cool and funny votes **sent** by the user, number of different complements received by different users, avg number of stars given
++ checkin_data: time stamp of check ins made on a business
++ tip_data: comments of users to a particular business, number of compliments each comment received, mapped to user and business
+
+We now need to clean up the data and prepare one dataframe that inlcudes all the necessary information. 
+```{r data manipulation}
+# review data:
+# slice to make testing easier
+text_test_df <- review_data_small[1:200000, ]
+## prepare text for analysis:
+corpus <- Corpus(VectorSource(text_test_df$text))
+
+## Preprocess the text: remove punctuation and stopwords
+corpus <- tm_map(corpus, tolower)
+corpus <- tm_map(corpus, removePunctuation)
+corpus <- tm_map(corpus, removeWords, stopwords("english"))
+corpus <- tm_map(corpus, stemDocument)
+
+frequencies = DocumentTermMatrix(corpus)
+sparse = removeSparseTerms(frequencies, 0.995)
+tSparse = as.data.frame(as.matrix(sparse))
+## we are now left with a matrix that could then be merged onto the other df because the order remains the same, i.e. row order is the same
+
+text_test_df$text_cleaned <- sapply(corpus, as.character)
+
+## business data
+cols_keep_business_data <- empty_rows_business_data %>% dplyr::filter(`EmptyRows` < 20000 & !Column %in% c('name', 'address', 'latitude', 'longitude'))
+
+## tip data:
+num_comments_by_business <- tip_data %>% group_by(business_id) %>% summarise(total_comments_business = n())
+
+# user data:
+user_data_selected <- user_data_small  %>% mutate(yelping_since_weeks = round(as.numeric(difftime("2023-12-31 00:00:00", yelping_since, units = "weeks")), digits = 0), num_friends = ifelse(friends != "None", sapply(strsplit(friends, ","), function(x) length(x)), 0), total_compliments = select(., starts_with("compliment_")) %>% rowSums(na.rm = TRUE)) %>% select(-c(name, yelping_since))
+
+# merge other data sets onto review data which is the main one:
+review_data_combined <- review_data_small %>% left_join(business_data[, cols_keep_business_data$Column], by = 'business_id', suffix = c('_review', '_business')) %>% left_join(user_data_selected, by = 'user_id', suffix = c('_review', '_user')) %>% left_join(num_comments_by_business, by = 'business_id')
+view(count_empty_rows(review_data_combined))
+
+```
+### Data Structure
+1. What data structure is required for our prediction?
+- one test and one training dataset
+- test has 10,000 entries
+- how do we deal with multiple reviews?
+- what is the structure of the data? i.e. based on individual i and business j?
+
+2. What can be added from which datasets?
+- main dataset: review data small
+- additions from other datasets: 
+2.1 average rating of business (in business data), average rating customer gives (in user_data_small)
+2.2 check in data: number of checkins made on a business
+2.3 review data/ tip data: number of reviews/ comments given to a business, quality of tips given to a business by text content + weigthed by reactions
+2.4 business data: all cols without too many missing values
+- is using means even allowed? what does the test data set need to look like? can we add new information to that too?
+2.5 user data: num friends, yelping since in month, useful, funny, cool, elite, fans, average_stars, maybe compliment data
+
+
+```{r further data exploration}
+# investigate relationships between different columns and stars_review
+
+# business info:
+business_review_comp <- trend_plot("stars_business")
+
+city_plot <- ggplot(review_data_combined %>% group_by(city) %>% summarise(mean_by_city = mean(stars_review)), mapping = aes(x = city, y= mean_by_city)) + geom_col() # clear differences in average ratings by city
+
+state_plot <- ggplot(review_data_combined %>% group_by(state) %>% summarise(mean_by_state = mean(stars_review)), mapping = aes(x = state, y= mean_by_state)) + geom_col() # clear differences in average ratings by state
+
+# review info:
+usefulness_info_plot <- ggplot(review_data_combined %>% dplyr::filter(useful_review <300), mapping = aes(x = useful_review, y = stars_review)) + geom_hex() + geom_smooth(method = "glm", formula = y ~ x + x^2 + x^3) + ylim(1,5) ## strong negative correlation
+
+funny_info_plot <- ggplot(review_data_combined %>% dplyr::filter(funny_review <300), mapping = aes(x = funny_review, y = stars_review)) + geom_hex() + geom_smooth(method = "glm", formula = y ~ x + x^2 + x^3) + ylim(1,5) ## strong negative correlation
+
+cool_info_plot <- ggplot(review_data_combined %>% dplyr::filter(cool_review <500), mapping = aes(x = cool_review, y = stars_review)) + geom_hex() + geom_smooth(method = "glm", formula = y ~ x + x^2 + x^3) + ylim(1,5) ## strong positive correlation
+
+review_count_plot <- trend_plot("review_count_review") ## slight positive correlation
+
+# user info: 
+friends_count_plot <- trend_plot("num_friends") ## slight positive correlation
+
+fans_count_plot <- trend_plot("fans") ## slight positive correlation
+
+compliments_count_plot <- trend_plot("total_compliments") ## slight positive correlation
+
+yelp_since_plot <- trend_plot("yelping_since_weeks")
+
+
+```
+
+```{r test and training set generation}
+final_dataset <- review_data_combined %>% select(-c("date"))
+
+#Split data into test and training
+set.seed(1)
+train <- sample(1:nrow(review_data_combined), nrow(review_data_combined) - 10000) #keep 10,000 for the test data
+data_train <-review_data_combined[train,]
+
+#Test data
+data_test <- review_data_combined[-train,]
+
+# for shrinkage estimators we need to transform data into matrices, therefore we need the following transformation: 
+data_train_x <-data_train[,!colnames(data_test) %in% c("stars_review")]
+data_train_y <-data_train[,c("stars_review")]
+
+data_test_x <-data_test[, !colnames(data_test) %in% c("stars_review")]
+data_test_y <-data_test[,c("stars_review")]
+```
+
+```{r modelling and performance testing}
+##Linear Regression Model of stars given for a review as a function of user, business, and review characteristics
+lm_stars<- lm(stars_review ~ user_id, data = data_train)
+
+#Review the results
+summary(lm_stars)
+
+#Prediction to test data
+lm_stars_predict<-predict(lm_cars, newdata = data_test[,-c("stars_review")])
+
+#Empirical MSE in TEST data
+lm_stars_test_mse<-mean((lm_stars_predict-data_test$stars_review)^2)
+
+coeftest(lm_stars, vcov = vcovHC(lm_stars, type="HC3")) # what is this for? says for robust se
+
+## LASSO and Ridge
+shrinkage_estimator_computation <- function(lasso) {
+    cv_out <- cv.glmnet(as.matrix(data_train_x), as.matrix(data_train_y), alpha = lasso, nfolds = 3) # adapt the number of folds
+    cv_out_plot <- plot(cv_out)
+    lambda_cv <- cv_out$lambda.min
+
+    #Re-Estimate Ridge with lambda chosen by Cross validation
+    model<-glmnet(data_train_x, data_train_y, alpha = lasso, lambda = lambda_cv, thresh = 1e-12) # what does the thresh mean?
+
+    #Fit on Test Data
+    predictions <- predict(ridge_model, s = lambda_ridge_cv, newx = as.matrix(data_test_x))
+    mse <- mean((ridge_predictions - data_test_y) ^ 2)
+    
+    results <- list(cv_out, cv_out_plot, lambda_cv, model, predictions, mse)
+    return(results)
+}
+
+#Ridge with Cross-Validation 
+cv_out_ridge <- cv.glmnet(as.matrix(data_train_x), as.matrix(data_train_y), alpha = 0, nfolds = 3) # adapt the number of folds
+plot(cv_out_ridge)
+lambda_ridge_cv <- cv_out_ridge$lambda.min
+
+#Re-Estimate Ridge with lambda chosen by Cross validation
+ridge_model<-glmnet(data_train_x, data_train_y, alpha = 0, lambda = lambda_ridge_cv, thresh = 1e-12) # what does the thresh mean?
+
+#Fit on Test Data
+ridge_predictions <- predict(ridge_model, s = lambda_ridge_cv, newx = as.matrix(data_test_x))
+ridge_mse <- mean((ridge_predictions - data_test_y) ^ 2)
+
+#LASSO with Cross-Validation
+cv_out_lasso <- cv.glmnet(as.matrix(data_train_x), as.matrix(data_train_y), alpha = 1, nfolds = 3) # adapt the number of folds
+plot(cv_out_lasso)
+lambda_LASSO_cv <- cv_out_lasso$lambda.min
+
+#Re-Estimate LASSO with lambda chosen by Cross validation
+lasso_model <- glmnet(data_train_x, data_train_y, alpha = 1, lambda = lambda_LASSO_cv, thresh = 1e-12)
+coef(lasso_model) #note that some parameter estimates are set to 0 --> Model selection!
+
+#Fit on Test Data
+lasso_predictions <- predict(lasso_model, s = lambda_LASSO_cv, newx = as.matrix(data_test_x))
+lasso_mse <- mean((lasso_predictions - data_test_y) ^ 2) #Note how it outperforms OLS
+
+```
+
+```{r model comparison with adapted data}
+## Comparison of LASSO and ridge with frequency matrix of words replaced by binary (used/ not used) matrix
+columns_to_process <- c("belli")
+adapted_df <- final_dataset %>% mutate_at(vars(columns_to_process), funs(ifelse(. > 0, 1, 0)))
+# generate new training and test datasets
+data_train_binary <-adapted_df[train,]
+
+#Test data
+data_test_binary <- adapted_df[-train,]
+
+# for shrinkage estimators we need to transform data into matrices, therefore we need the following transformation: 
+data_train_binary_x <-data_train_binary[,!colnames(data_test_binary) %in% c("stars_review")]
+data_train_binary_y <-data_train_binary[,c("stars_review")]
+
+data_test_binary_x <-data_test_binary[, !colnames(data_test_binary) %in% c("stars_review")]
+data_test_binary_y <-data_test_binary[,c("stars_review")]
+
+# application on LASSO and Ridge
+cv_out_ridge_binary <- cv.glmnet(as.matrix(data_train_binary_x), as.matrix(data_train_binary_y), alpha = 0, nfolds = 3) # adapt the number of folds
+plot(cv_out_ridge_binary)
+lambda_ridge_cv_binary <- cv_out_ridge_binary$lambda.min
+
+#Re-Estimate Ridge with lambda chosen by Cross validation
+ridge_model_binary<-glmnet(data_train_binary_x, data_train_binary_y, alpha = 0, lambda = lambda_ridge_cv_binary, thresh = 1e-12) # what does the thresh mean?
+
+#Fit on Test Data
+ridge_predictions_binary <- predict(ridge_model_binary, s = lambda_ridge_cv_binary, newx = as.matrix(data_test_binary_x))
+ridge_mse_binary_binary <- mean((ridge_predictions_binary - data_test_binary_y) ^ 2)
+
+#LASSO with Cross-Validation
+cv_out_lasso_binary <- cv.glmnet(as.matrix(data_train_binary_x), as.matrix(data_train_binary_y), alpha = 1, nfolds = 3) # adapt the number of folds
+plot(cv_out_lasso_binary)
+lambda_LASSO_cv_binary <- cv_out_lasso_binary$lambda.min
+
+#Re-Estimate LASSO with lambda chosen by Cross validation
+lasso_model_binary <- glmnet(data_train_binary_x, data_train_binary_y, alpha = 1, lambda = lambda_LASSO_cv_binary, thresh = 1e-12)
+coef(lasso_model_binary) #note that some parameter estimates are set to 0 --> Model selection!
+
+#Fit on Test Data
+lasso_predictions_binary <- predict(lasso_model_binary, s = lambda_LASSO_cv_binary, newx = as.matrix(data_test_binary_x))
+lasso_mse_binary <- mean((lasso_predictions_binary - data_test_binary_y) ^ 2) #Note how it outperforms OLS
+
+```
+
+## Methodology
+This data science project requires a methodology that is iterative, intuitive and suitable for an individual project. Therefore, the CRISP-DM methodology is inappropriate given the large amount of documentation and stakeholder involvement included. Both, the SEMMA and OSEMN methods lack a phase dedicated to a clear problem definition. Despite it being an individual project outside a corporate setting, clearly defining the goal is crucial. Additionally, the TDSP and KDD methodologies are similar in structure to the John Rallin DS methodology, however, the latter is more detailed than the TDSP methodology. Thus, I will use an adapted version of the John Rallin general DS methodology. In particular, I will limit the first and last stages given the lack of a real-world setting which would require client and sponsor interaction as well as implementation. 
+
+
+## Project Challenges
 

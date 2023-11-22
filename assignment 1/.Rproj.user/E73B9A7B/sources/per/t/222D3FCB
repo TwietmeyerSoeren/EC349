@@ -3,7 +3,7 @@
     "path": "C:/Users/sttwi/Desktop/Drive/PPE/EC349/EC349/assignment 1/code/assignment start.Rmd",
     "project_path": "code/assignment start.Rmd",
     "type": "r_markdown",
-    "hash": "3270774720",
+    "hash": "2041899392",
     "contents": "",
     "dirty": false,
     "created": 1699456109800.0,
@@ -12,16 +12,16 @@
     "properties": {
         "source_window_id": "",
         "Source": "Source",
-        "cursorPosition": "38,18",
-        "scrollLine": "32",
-        "last_setup_crc32": ""
+        "cursorPosition": "69,776",
+        "scrollLine": "62",
+        "last_setup_crc32": "35b5da3c6ffd24cd"
     },
     "folds": "",
-    "lastKnownWriteTime": 1699456312,
+    "lastKnownWriteTime": 1699465618,
     "encoding": "UTF-8",
     "collab_server": "",
     "source_window": "",
-    "last_content_update": 1699457346033,
+    "last_content_update": 1699465618523,
     "read_only": false,
     "read_only_alternatives": []
 }
