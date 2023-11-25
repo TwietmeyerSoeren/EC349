@@ -22,7 +22,6 @@ Predict the rating of user i for business j as the number of stars given
 4. Data preparation
 
 
-```{r setup, include=FALSE}
 rm(list = ls())
 library(conflicted)
 library(jsonlite)
@@ -35,18 +34,19 @@ library(sandwich)
 library(lmtest)
 library(doParallel)
 library(glmnet)
+library(fastDummies)
+library(rpart)
 getwd()
-source("../code/assignment_functions.R")
 conflicts_prefer(dplyr::summarise(), dplyr::filter, dplyr::mutate())
-```
 
-```{r Load data}
+```{r Load data and functions}
+# source functions
+source("../code/assignment_functions.R")
+
 # Load Different Data
 business_data <- stream_in(file("../data/yelp_academic_dataset_business.json"))
 business_data_unnested <- unnest(business_data, attributes)
-#review_data  <- stream_in(file("../data/yelp_academic_dataset_review.json"))
 checkin_data  <- stream_in(file("../data/yelp_academic_dataset_checkin.json"))
-#user_data <- stream_in(file("../data/yelp_academic_dataset_user.json"))
 tip_data  <- stream_in(file("../data/yelp_academic_dataset_tip.json"))
 
 # Load smaller data sets for comparative purposes and easier testing
@@ -68,7 +68,7 @@ length(unique(review_data_small$review_id))
 
 # check in data
 str(checkin_data)
-num_checkins_by_business <- checkin_data  %>% group_by(business_id) %>% dplyr::summarise(total_checkins = n()) %>% dplyr::filter(total_checkins > 1)
+check_ins_by_business <- checkin_data  %>% mutate(num_checkins_by_business = ifelse(date != "None", sapply(strsplit(date, ","), function(x) length(x)), 0)) %>% select(-"date")
 
 # user data
 str(user_data_small)
@@ -77,7 +77,7 @@ length(unique(user_data_small$user_id))
 str(tip_data)
 
 ```
-The data exploration phase showed the check in data is not useful for our purpose given the lack of variation in the number of check ins between business. The business data set includes useful information, however, some columns suffer from large shares of missing data, which negatively impacts its usefulness. Having a lot of missing values means that, if we want to include the variables, we need to drop a lot of values, leaving us with too few reviews and probably highly biased results given that the lack of data is probably not random. The tip data only includes additional comments made from a user to a business and can be omitted given the inclusion of the comments of the reviews from the review data set. 
+
 
 ### Data Description
 + data documentation: https://www.yelp.com/dataset/documentation/main
@@ -92,22 +92,20 @@ We now need to clean up the data and prepare one dataframe that inlcudes all the
 # review data:
 ## temporary shortened version to test
 df_part_one <- generate_final_df(1, 50000)
-df_part_two <- generate_final_df(50001, 90000)
-df_part_three <- generate_final_df(90001, 150000) #nrow(review_data_small)
+df_part_two <- generate_final_df(50001, 100000)
+df_part_three <- generate_final_df(100001, 150000) #nrow(review_data_small)
 
 # save the dataframe so that we don't have to generate it over and over again
 df_combined <- bind_rows(df_part_one, df_part_two, df_part_three)
-write_csv(df_combined, "../data/df_combined2.csv")
 
 # manipulate data so that columns get filled with 0s
-cols_to_change <- colnames(df_combined)[41:length(colnames(df_combined))]
+cols_to_change <- colnames(df_combined)[46:length(colnames(df_combined))]
 df_combined_updated <- df_combined %>% mutate_at(vars(cols_to_change), ~replace_na(., 0))
-view(count_empty_rows(df_combined))
 
 ```
+
 ```{r further data exploration}
 # investigate relationships between different columns and stars_review
-
 # business info:
 business_review_comp <- trend_plot("stars_business")
 
@@ -137,7 +135,9 @@ yelp_since_plot <- trend_plot("yelping_since_weeks")
 ```{r test and training set generation}
 ### probably have to remove rows with NA first
 ### maybe have one df and then select only relevant cols for Ridge and Lasso later on
-final_dataset <- df_combined_updated %>% select(-c("date", "text", starts_with("compliment_"), "review_count_user", "useful_user", "funny_user", "cool_user", "BusinessAcceptsCreditCards", "categories", "elite", "fans", "average_stars", "yelping_since_weeks", "num_friends", "was_elite", "total_compliments", "total_comments_business", "categories", "review_id", "business_id", "user_id", "city", "state", "postal_code"))
+final_dataset <- df_combined_updated %>%  select(-c("date", "text", starts_with("compliment_"), "review_id", "business_id", "user_id", "city", "postal_code", "categories"))
+view(count_empty_rows(final_dataset))
+# c("date", "text", starts_with("compliment_"), "review_count_user", "useful_user", "funny_user", "cool_user", "BusinessAcceptsCreditCards", "categories", "elite", "fans", "average_stars", "yelping_since_weeks", "num_friends", "was_elite", "total_compliments", "total_comments_business", "categories", "review_id", "business_id", "user_id", "city", "state", "postal_code")
 
 #Split data into test and training
 set.seed(1)
@@ -148,10 +148,10 @@ data_train <-final_dataset[train,]
 data_test <- final_dataset[-train,]
 
 # for shrinkage estimators we need to transform data into matrices, therefore we need the following transformation: 
-data_train_x <-data_train[,!colnames(data_train) %in% c("stars_review")]
+data_train_x <-data_train[,!colnames(data_train) %in% c("stars_review", "state")]
 data_train_y <-data_train[,c("stars_review")]
 
-data_test_x <-data_test[, !colnames(data_test) %in% c("stars_review")]
+data_test_x <-data_test[, !colnames(data_test) %in% c("stars_review", "state")]
 data_test_y <-data_test[,c("stars_review")]
 ```
 
@@ -159,21 +159,18 @@ data_test_y <-data_test[,c("stars_review")]
 ```{r modelling and performance testing}
 
 ##Linear Regression Model of stars given for a review as a function of user, business, and review characteristics
-lm_stars<- lm(stars_review ~ cool_review + review_count_review + funny_review, data = data_train, na.action = na.omit)
+lm_stars<- lm(stars_review ~ cool_review + review_count_review + funny_review + stars_business + total_comments_business + BusinessAcceptsCreditCards + state + is_open, data = data_train)
 
 #Review the results
-summary(lm_stars)
+coeftest(lm_stars, vcov = vcovHC(lm_stars, type="HC3"))
 
 #Prediction to test data
-lm_stars_predict<-predict(lm_stars, newdata = data_test_x)
+lm_stars_predict<-predict(lm_stars, newdata = data_test[, !colnames(data_test) %in% c("stars_review")])
 
 #Empirical MSE in TEST data
 lm_stars_test_mse<-mean((lm_stars_predict-data_test$stars_review)^2)
 
-coeftest(lm_stars, vcov = vcovHC(lm_stars, type="HC3")) # what is this for? says for robust se
-
 ## LASSO and Ridge
-### does cv.glmnet still allow for strings to be categorical variables to be maintained?
 ridge_results <- shrinkage_estimator_computation(0, data_train_x, data_train_y, data_test_x, data_test_y)
 cv_out <- cv.glmnet(as.matrix(data_train_x), as.matrix(data_train_y), alpha = 0, nfolds = 3)
 cv_out_ridge <- ridge_results[[1]]
@@ -194,9 +191,10 @@ lasso_predictions<- lasso_results[[5]]
 lasso_mse <- lasso_results[[6]]
 
 ```
+
 ```{r model comparison with adapted data}
 ## Comparison of LASSO and ridge with frequency matrix of words replaced by binary (used/ not used) matrix
-adapted_df <- final_dataset %>% mutate_at(vars(colnames(tSparse)), list(~ifelse(. > 0, 1, 0)))
+adapted_df <- final_dataset %>% mutate_at(vars(colnames(final_dataset[, 38:ncol(final_dataset)])), list(~ifelse(. > 0, 1, 0)))
 # generate new training and test datasets
 data_train_binary <-adapted_df[train,]
 
@@ -204,10 +202,10 @@ data_train_binary <-adapted_df[train,]
 data_test_binary <- adapted_df[-train,]
 
 # for shrinkage estimators we need to transform data into matrices, therefore we need the following transformation: 
-data_train_binary_x <-data_train_binary[,!colnames(data_train_binary) %in% c("stars_review")]
+data_train_binary_x <-data_train_binary[,!colnames(data_train_binary) %in% c("stars_review", "state")]
 data_train_binary_y <-data_train_binary[,c("stars_review")]
 
-data_test_binary_x <-data_test_binary[, !colnames(data_test_binary) %in% c("stars_review")]
+data_test_binary_x <-data_test_binary[, !colnames(data_test_binary) %in% c("stars_review", "state")]
 data_test_binary_y <-data_test_binary[,c("stars_review")]
 
 # application on LASSO and Ridge
@@ -230,8 +228,47 @@ lasso_predictions_binary <- lasso_results_binary[[5]]
 lasso_mse_binary <- lasso_results_binary[[6]]
 ```
 
+```{r tree based models}
+# classic model
+standard_tree <- rpart(stars_review ~ cool_review + review_count_review + funny_review + stars_business + total_comments_business + BusinessAcceptsCreditCards + state + is_open, data = data_train)
+plot(standard_tree)
+
+# bagging
+
+
+
+```
+
+
+
+## Outline of the goal
+This project is aiming to predict user ratings on yelp using data on the reviews submitted, the user, the business as well as data on additional comments made about a particular business. The goal is to achieve a precise prediction given the information available and does not require an evaluation of the reviews themselves, i.e., why users gave a specific review. This will allow us to trade off interpretability of our models for gains in performance. 
+
 ## Methodology
-This data science project requires a methodology that is iterative, intuitive and suitable for an individual project. Therefore, the CRISP-DM methodology is inappropriate given the large amount of documentation and stakeholder involvement included. Both, the SEMMA and OSEMN methods lack a phase dedicated to a clear problem definition. Despite it being an individual project outside a corporate setting, clearly defining the goal is crucial. Additionally, the TDSP and KDD methodologies are similar in structure to the John Rallin DS methodology, however, the latter is more detailed than the TDSP methodology. Thus, I will use an adapted version of the John Rallin general DS methodology. In particular, I will limit the first and last stages given the lack of a real-world setting which would require client and sponsor interaction as well as implementation. 
+This data science project requires a methodology that is iterative, intuitive and suitable for an individual project. Given the absence of a business case or outside stakeholders, steps that included in methods such as CRISP-DM relating to the understanding of the business is only marginally relevant. Additionally, CRISP-DM is documentation heavy, which can be helpful in longer and larger projects but is less required for an individual project. The John Rallin DS methodology, TDSP and the KDD methodology are very similar in structure and contain irrelevant parts regarding to the business understanding and stakeholder involvement. Therefore, the OSEMN methodology is the most appropriate since it only covers the core parts of the aforementioned methodologies and is well suited for individual projects which require less documentation. Nevertheless, I will adapt the structure to include a phase for a clear problem definition. This is crucial despite the absence of other parties with interest in the project.
+
+## Data Exploration
+The data exploration phase showed that the business data set includes useful information, however, some columns suffer from large shares of missing data, which negatively impacts its usefulness. Having a lot of missing values means that, if we want to include the variables, we need to drop a lot of reviews, leaving us with too few reviews and probably highly biased results given that the lack of data is probably not random. The tip data only includes additional comments made from a user to a business and can be omitted given the inclusion of the comments of the reviews from the review data set. The check-in data only contains the times a user looked at a particular business and is thereby of limited use. !! Maybe include graph showing relationship between number of check ins and stars given !!! Whilst the user data set contains valuable information that show significant correlation with our variable of interest, there is a large number of users in the review data set which are missing from the user data set. Thus the data will be of limited use if there is an insufficient degree of matches.
+
+!!! Include graphs here and discuss them !!!
+
+Discuss dropping of certain values
+
+
+## Modeling
+### Model choice
+Our data set contains a large number of parameters as well as a large number of observations. However, only few are likely to be highly correlated with our variable of interest. Variables such as the average number of stars given to a business are likely to by highly correlated with the number of stars of a review however, individual words taken from the review will only reveal low correlation !!! provide tables here !!!. In these cases, a less flexible model will do better since it trades off a bit of bias for a large reduction in the variance. The OLS regression can neither drop nor shrink the coefficient of certain features and is hence plagued by a high bias. Ridge and LASSO models both benefit from the ability to shrink coefficients hence reducing the negative impact of variables of low explanatory power and high multicolinearity.
+
+### OLS regression
+Since we are not concerned with endogeneity, we can select various models to find the model which performs the best. However, including a large number of parameters will lead to poor performance given the high variance. The model $stars\_review_{ij} =   cool\_review_i + review\_count\_review_i + funny\_review_i + stars\_business_j + total\_comments\_business_j + BusinessAcceptsCreditCards_j + state_j + is_open_j + \epsilon_i $ !!! Include specification !!! performed the best on the test data set with a MSE of XXX. 
+
+### Ridge and LASSO
+As mentioned above, LASSO and Ridge allow us to include more parameters without significantly increasing the variance. Despite a small increase in bias, the large decrease in variance has led to a significantly better performance, reaching a MSE of XXX using Ridge and a MSE of XXX. 
+Changing the data format slightly to only indicate the usage of a word without specifying the frequency, we can achieve an even better performance. This is due to the fact that often used words are prevented from getting too much weight. 
+
+### Performance evaluation
+As mentioned above, the shrinkage estimators have a significant advantage over the OLS estimator due to the ability to either shrink the coefficient or perform variable selection. This advantage is reflected in a significantly lower MSE !! show all in table !! 
+
 
 
 ## Project Challenges

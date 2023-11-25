@@ -41,13 +41,35 @@ shrinkage_estimator_computation <- function(lasso, trng_data_x_vals, trng_data_y
 
 generate_final_df <- function(start, end){
   sliced_df <- review_data_small[start:end, ]
+  
+  ## business data
+  empty_rows_business_data <- count_empty_rows(business_data_unnested)
+  cols_keep_business_data <- empty_rows_business_data %>% filter(`EmptyRows` < 35000 & !Column %in% c('name', 'address', 'latitude', 'longitude'))
+  business_data_selected <- dummy_cols(business_data_unnested[, cols_keep_business_data$Column], select_columns = 'state', remove_selected_columns = FALSE, remove_first_dummy  = TRUE) %>% mutate(BusinessAcceptsCreditCards = ifelse(BusinessAcceptsCreditCards == "True", 1, 0))
+  
+  ## tip data:
+  num_comments_by_business <- tip_data %>% group_by(business_id) %>% summarise(total_comments_business = n())
+  
+  # user data:
+  user_data_selected <- user_data_small  %>% mutate(yelping_since_weeks = round(as.numeric(difftime("2023-12-31 00:00:00", yelping_since, units = "weeks")), digits = 0), num_friends = ifelse(friends != "None", sapply(strsplit(friends, ","), function(x) length(x)), 0), total_compliments = select(., starts_with("compliment_")) %>% rowSums(na.rm = TRUE)) %>% mutate(was_elite = ifelse(nchar(elite) > 1, 1, 0))%>%  select(-c(name, yelping_since, friends))# explain why you aggregated compliments instead of using each individually
+  
+  # check in data
+  check_ins_by_business <- checkin_data  %>% mutate(num_checkins_by_business = ifelse(date != "None", sapply(strsplit(date, ","), function(x) length(x)), 0)) %>% select(-"date")
+  # merge other data sets onto review data which is the main one:
+  combined_df <- sliced_df %>% left_join(business_data_selected, by = 'business_id', suffix = c('_review', '_business')) %>% left_join(user_data_selected, by = 'user_id', suffix = c('_review', '_user')) %>% left_join(num_comments_by_business, by = 'business_id') %>% left_join(check_ins_by_business, by = "business_id")
+  # find all columns that have enough populated cells, drop the rest
+  combined_df_empty_rows <- count_empty_rows(combined_df) %>% filter(`EmptyRows` < 0.2*nrow(combined_df))
+  # drop all rows that have any remaining missing values after the columns have been selected since the models can't handle missing values
+  combined_df_filtered <- combined_df[, combined_df_empty_rows$Column] %>% na.omit()
+  
+  ## add text
   cl <- makeCluster(detectCores())
   registerDoParallel(cl)
   
   ## prepare text for analysis:
-  corpus <- Corpus(VectorSource(sliced_df$text))
+  corpus <- Corpus(VectorSource(combined_df_filtered$text))
   
-  ## Preprocess the text: remove punctuation and stopwords
+  ## Preprocess the text: remove punctuation and stop words
   corpus <- tm_map(corpus, tolower)
   corpus <- tm_map(corpus, removePunctuation)
   corpus <- tm_map(corpus, removeWords, stopwords("english"))
@@ -57,23 +79,12 @@ generate_final_df <- function(start, end){
   sparse = removeSparseTerms(frequencies, 0.98)
   tSparse = as.data.frame(as.matrix(sparse))
   
-  # Close the parallel backend
+  # Close the parallel back-end
   stopCluster(cl)
   
   ## we are now left with a matrix that could then be merged onto the other df because the order remains the same, i.e. row order is the same
-  tSparse$review_id <- sliced_df$review_id
+  tSparse$review_id <- combined_df_filtered$review_id
   
-  ## business data
-  cols_keep_business_data <- empty_rows_business_data %>% dplyr::filter(`EmptyRows` < 35000 & !Column %in% c('name', 'address', 'latitude', 'longitude'))
-  
-  ## tip data:
-  num_comments_by_business <- tip_data %>% group_by(business_id) %>% dplyr::summarise(total_comments_business = n())
-  
-  # user data:
-  user_data_selected <- user_data_small  %>% mutate(yelping_since_weeks = round(as.numeric(difftime("2023-12-31 00:00:00", yelping_since, units = "weeks")), digits = 0), num_friends = ifelse(friends != "None", sapply(strsplit(friends, ","), function(x) length(x)), 0), total_compliments = select(., starts_with("compliment_")) %>% rowSums(na.rm = TRUE)) %>% mutate(was_elite = ifelse(nchar(elite) > 1, 1, 0))%>%  select(-c(name, yelping_since, friends))# explain why you aggregated compliments instead of using each individually
-  
-  # merge other data sets onto review data which is the main one:
-  combined_df <- sliced_df %>% left_join(business_data_unnested[, cols_keep_business_data$Column], by = 'business_id', suffix = c('_review', '_business')) %>% left_join(user_data_selected, by = 'user_id', suffix = c('_review', '_user')) %>% left_join(num_comments_by_business, by = 'business_id') %>% left_join(tSparse, by = 'review_id', suffix = c("_review", ""))
-  
-  return(combined_df)
+  part_df <- combined_df_filtered %>% left_join(tSparse, by = 'review_id', suffix = c("_review", ""))
+  return(part_df)
 }
