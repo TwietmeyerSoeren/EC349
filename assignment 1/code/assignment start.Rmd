@@ -36,6 +36,8 @@ library(doParallel)
 library(glmnet)
 library(fastDummies)
 library(rpart)
+library(tidymodels)
+library(ipred)
 getwd()
 conflicts_prefer(dplyr::summarise(), dplyr::filter, dplyr::mutate())
 
@@ -52,7 +54,7 @@ tip_data  <- stream_in(file("../data/yelp_academic_dataset_tip.json"))
 # Load smaller data sets for comparative purposes and easier testing
 load("../data/yelp_review_small.Rda")
 load("../data/yelp_user_small.Rda")
-df_combined <- read_csv("../data/df_combined.csv")
+#df_combined <- read_csv("../data/df_combined.csv")
 
 ```
 
@@ -61,6 +63,8 @@ df_combined <- read_csv("../data/df_combined.csv")
 str(business_data_unnested)
 empty_rows_business_data <- count_empty_rows(business_data_unnested)
 length(unique(business_data_unnested$business_id))
+cols_keep_business_data <- empty_rows_business_data %>% filter(`EmptyRows` < 35000 & !Column %in% c('name', 'address', 'latitude', 'longitude'))
+
 
 # review data
 str(review_data_small)
@@ -88,14 +92,86 @@ str(tip_data)
 + tip_data: comments of users to a particular business, number of compliments each comment received, mapped to user and business
 
 We now need to clean up the data and prepare one dataframe that inlcudes all the necessary information. 
-```{r data manipulation}
-# review data:
-## temporary shortened version to test
-df_part_one <- generate_final_df(1, 50000)
-df_part_two <- generate_final_df(50001, 100000)
-df_part_three <- generate_final_df(100001, 150000) #nrow(review_data_small)
+```{r further data exploration}
+# investigate relationships between different columns and stars_review
 
-# save the dataframe so that we don't have to generate it over and over again
+## tip data:
+num_comments_by_business <- tip_data %>% group_by(business_id) %>% summarise(total_comments_business = n())
+  
+# user data:
+user_data_selected <- user_data_small  %>% mutate(yelping_since_weeks = round(as.numeric(difftime("2023-12-31 00:00:00", yelping_since, units = "weeks")), digits = 0), num_friends = ifelse(friends != "None", sapply(strsplit(friends, ","), function(x) length(x)), 0), total_compliments = select(., starts_with("compliment_")) %>% rowSums(na.rm = TRUE)) %>% mutate(was_elite = ifelse(nchar(elite) > 1, 1, 0))%>%  select(-c(name, yelping_since, friends))
+  
+# check in data
+check_ins_by_business <- checkin_data  %>% mutate(num_checkins_by_business = ifelse(date != "None", sapply(strsplit(date, ","), function(x) length(x)), 0)) %>% select(-"date")
+
+# merge other data sets onto review data which is the main one:
+review_data_combined <- review_data_small %>% left_join(business_data_unnested[, cols_keep_business_data$Column], by = 'business_id', suffix = c('_review', '_business')) %>% left_join(user_data_selected, by = 'user_id', suffix = c('_review', '_user')) %>% left_join(num_comments_by_business, by = 'business_id') %>% left_join(check_ins_by_business, by = "business_id") %>% mutate(BusinessAcceptsCreditCards = ifelse(BusinessAcceptsCreditCards == "True", 1, 0))
+
+# see how columns are populated
+view(count_empty_rows(review_data_combined))
+
+
+# business info:
+business_review_comp <- ggplot(review_data_combined, mapping = aes(x = stars_business, y = stars_review)) + geom_hex() + geom_smooth(method = "glm", formula = y ~ x + I(x^2) + I(x^3)) + ylim(1,5) + labs(x = "Mean rating of a business", y = "User Rating", title = str_wrap("Relationship between user ratings and average business ratings", 50)) + theme_pubr()+ theme(legend.title = element_blank(), legend.position = 'right', legend.key.height = unit(1.5, 'cm'),text = element_text(colour = 'black', size = 16)) 
+
+num_coms_business <- trend_plot("total_comments_business", 1)
+
+city_plot <- ggplot(review_data_combined %>% group_by(city) %>% dplyr::summarise(mean_by_city = mean(stars_review)), mapping = aes(x = city, y= mean_by_city)) + geom_col() # clear differences in average ratings by city
+
+state_plot <- ggplot(review_data_combined %>% group_by(state) %>% dplyr::summarise(mean_by_state = mean(stars_review)), mapping = aes(x = state, y= mean_by_state)) + geom_col() + labs(x = "State", y = "Mean Rating", title = "Average rating in each state") + theme_pubr()+ theme(text = element_text(colour = 'black', size = 12)) # clear differences in average ratings by state
+
+credit_card_plot <- trend_plot("BusinessAcceptsCreditCards", 0) # slight downward trend
+mean(review_data_combined$BusinessAcceptsCreditCards, na.rm = TRUE)
+
+is_open_plot <- trend_plot("is_open", 0) # slight upwards trend
+mean(review_data_combined$is_open)
+
+# review info:
+usefulness_info_plot <- trend_plot("useful_review", 1)
+funny_info_plot <- trend_plot("funny_review", 1)
+cool_info_plot <- cool_info_plot("cool_review", 1)
+
+review_count_plot <- trend_plot("review_count_review") ## slight positive correlation, slightly non-linear
+
+# user info: 
+friends_count_plot <- trend_plot("num_friends", 1) ## slight positive correlation
+
+fans_count_plot <- trend_plot("fans", 1) ## slight positive correlation
+
+compliments_count_plot <- trend_plot("total_compliments", 1) ## slight positive correlation
+
+yelp_since_plot <- trend_plot("yelping_since_weeks", 0) ## slight positive relationship
+yelping_since_fancy_plot <- ggplot(review_data_combined, mapping = aes(x = yelping_since_weeks, y = stars_review)) +
+    geom_hex() + geom_smooth(method = "glm", formula = y ~ x + I(x^2) + I(x^3)) + ylim(1,5) + labs(x = "Number of weeks since a user joined Yelp", y = "User Rating", title = "Relationship length of Yelp usership and ratings") + theme_pubr()+ theme(legend.title = element_blank(), legend.position = 'right', legend.key.height = unit(1, 'cm'),text = element_text(colour = 'black', size = 16)) 
+
+# check-in data
+num_checkins_plot <- ggplot(review_data_combined, mapping = aes(x = num_checkins_by_business, y = stars_review)) +
+    geom_hex() + geom_smooth(method = "glm", formula = y ~ x + I(x^2) + I(x^3)) + ylim(1,5) + labs(x = "Number of check-ins made on a business", y = "User Rating", title = str_wrap("Relationship between the number of business check-ins and user ratings", 50)) + theme_pubr()+ theme(legend.title = element_blank(), legend.position = 'right', legend.key.height = unit(1, 'cm'),text = element_text(colour = 'black', size = 16)) 
+```
+
+```{r data manipulation}
+# create one data frame that contains all the useful information 
+## business data
+cols_keep_business_data <- count_empty_rows(business_data_unnested) %>% filter(`EmptyRows` < 0.25*nrow(business_data_unnested) & !Column %in% c('name', 'address', 'latitude', 'longitude'))
+business_data_selected <- dummy_cols(business_data_unnested[, cols_keep_business_data$Column], select_columns = c('state'), remove_selected_columns = FALSE, remove_first_dummy  = TRUE) %>% mutate(BusinessAcceptsCreditCards = ifelse(BusinessAcceptsCreditCards == "True", 1, 0))
+
+
+# merge business_data, check_in_data, and tip_data onto review data which is the main one:
+combined_df <- review_data_small %>% left_join(business_data_selected, by = 'business_id', suffix = c('_review', '_business')) %>% left_join(num_comments_by_business, by = 'business_id') %>% left_join(check_ins_by_business, by = "business_id")
+
+# find all columns that have enough populated cells, drop the rest
+combined_df_empty_rows <- count_empty_rows(combined_df) %>% filter(`EmptyRows` < 0.2*nrow(combined_df))
+
+# drop all rows that have any remaining missing values after the columns have been selected since the models can't handle missing values
+combined_df_filtered <- combined_df[, combined_df_empty_rows$Column] %>% na.omit()
+
+## temporary shortened version to test
+## add the text from the comments in a cleaned way such that it can be included in our models
+df_part_one <- generate_final_df(1, 40000, combined_df_filtered)
+df_part_two <- generate_final_df(40001, 80000, combined_df_filtered)
+df_part_three <- generate_final_df(80001, 120000, combined_df_filtered)
+
+# save the data frame so that we don't have to generate it over and over again
 df_combined <- bind_rows(df_part_one, df_part_two, df_part_three)
 
 # manipulate data so that columns get filled with 0s
@@ -104,40 +180,8 @@ df_combined_updated <- df_combined %>% mutate_at(vars(cols_to_change), ~replace_
 
 ```
 
-```{r further data exploration}
-# investigate relationships between different columns and stars_review
-# business info:
-business_review_comp <- trend_plot("stars_business")
-
-city_plot <- ggplot(review_data_combined %>% group_by(city) %>% dplyr::summarise(mean_by_city = mean(stars_review)), mapping = aes(x = city, y= mean_by_city)) + geom_col() # clear differences in average ratings by city
-
-state_plot <- ggplot(review_data_combined %>% group_by(state) %>% dplyr::summarise(mean_by_state = mean(stars_review)), mapping = aes(x = state, y= mean_by_state)) + geom_col() # clear differences in average ratings by state
-
-# review info:
-usefulness_info_plot <- ggplot(review_data_combined %>% dplyr::filter(useful_review <300), mapping = aes(x = useful_review, y = stars_review)) + geom_hex() + geom_smooth(method = "glm", formula = y ~ x + x^2 + x^3) + ylim(1,5) ## strong negative correlation
-
-funny_info_plot <- ggplot(review_data_combined %>% dplyr::filter(funny_review <300), mapping = aes(x = funny_review, y = stars_review)) + geom_hex() + geom_smooth(method = "glm", formula = y ~ x + x^2 + x^3) + ylim(1,5) ## strong negative correlation
-
-cool_info_plot <- ggplot(review_data_combined %>% dplyr::filter(cool_review <500), mapping = aes(x = cool_review, y = stars_review)) + geom_hex() + geom_smooth(method = "glm", formula = y ~ x + x^2 + x^3) + ylim(1,5) ## strong positive correlation
-
-review_count_plot <- trend_plot("review_count_review") ## slight positive correlation
-
-# user info: 
-friends_count_plot <- trend_plot("num_friends") ## slight positive correlation
-
-fans_count_plot <- trend_plot("fans") ## slight positive correlation
-
-compliments_count_plot <- trend_plot("total_compliments") ## slight positive correlation
-
-yelp_since_plot <- trend_plot("yelping_since_weeks")
-```
-
 ```{r test and training set generation}
-### probably have to remove rows with NA first
-### maybe have one df and then select only relevant cols for Ridge and Lasso later on
-final_dataset <- df_combined_updated %>%  select(-c("date", "text", starts_with("compliment_"), "review_id", "business_id", "user_id", "city", "postal_code", "categories"))
-view(count_empty_rows(final_dataset))
-# c("date", "text", starts_with("compliment_"), "review_count_user", "useful_user", "funny_user", "cool_user", "BusinessAcceptsCreditCards", "categories", "elite", "fans", "average_stars", "yelping_since_weeks", "num_friends", "was_elite", "total_compliments", "total_comments_business", "categories", "review_id", "business_id", "user_id", "city", "state", "postal_code")
+final_dataset <- df_combined_updated %>%  select(-c("date", "text", starts_with("compliment_"), "review_id", "business_id", "user_id", "city", "postal_code", "categories")) %>% mutate(useful_sq = I(useful^2), useful_cube = I(useful^3), funny_sq = I(funny^2), funny_cube = I(funny^3), cool_review_sq = I(cool_review^2), cool_review_cube = I(cool_review^3))
 
 #Split data into test and training
 set.seed(1)
@@ -159,7 +203,7 @@ data_test_y <-data_test[,c("stars_review")]
 ```{r modelling and performance testing}
 
 ##Linear Regression Model of stars given for a review as a function of user, business, and review characteristics
-lm_stars<- lm(stars_review ~ cool_review + review_count_review + funny_review + stars_business + total_comments_business + BusinessAcceptsCreditCards + state + is_open, data = data_train)
+lm_stars<- lm(stars_review ~ cool_review + I(cool_review^2) + I(cool_review^3) + review_count + useful + I(useful^2)+ I(useful^3) + funny + I(funny^2) + I(funny^3)+ stars_business + total_comments_business + state + is_open + num_checkins_by_business, data = data_train)
 
 #Review the results
 coeftest(lm_stars, vcov = vcovHC(lm_stars, type="HC3"))
@@ -172,23 +216,25 @@ lm_stars_test_mse<-mean((lm_stars_predict-data_test$stars_review)^2)
 
 ## LASSO and Ridge
 ridge_results <- shrinkage_estimator_computation(0, data_train_x, data_train_y, data_test_x, data_test_y)
-cv_out <- cv.glmnet(as.matrix(data_train_x), as.matrix(data_train_y), alpha = 0, nfolds = 3)
-cv_out_ridge <- ridge_results[[1]]
-plot_cv_out_ridge <- ridge_results[[2]]
-lambda_ridge_cv<- ridge_results[[3]]
-ridge_model<- ridge_results[[4]]
-ridge_predictions<- ridge_results[[5]]
-ridge_mse <- ridge_results[[6]]
-
+cv_out_ridge <- ridge_results$cv_out
+plot_cv_out_ridge <- ridge_results$cv_out_plot
+lambda_ridge_cv<- ridge_results$lambda_cv
+ridge_model<- ridge_results$model
+ridge_mse <- ridge_results$mse
+ridge_mse_training <- ridge_results$mse_training
+ridge_rsq <- ridge_results$rsq
+ridge_rsq_training <- ridge_results$rsq_training
 
 #LASSO with Cross-Validation
 lasso_results <- shrinkage_estimator_computation(1, data_train_x, data_train_y, data_test_x, data_test_y)
-cv_out_lasso <- lasso_results[[1]]
-plot_cv_out_lasso <- lasso_results[[2]]
-lambda_lasso_cv<- lasso_results[[3]]
-lasso_model<- lasso_results[[4]]
-lasso_predictions<- lasso_results[[5]]
-lasso_mse <- lasso_results[[6]]
+cv_out_lasso <- lasso_results$cv_out
+plot_cv_out_lasso <- lasso_results$cv_out_plot
+lambda_lasso_cv <- lasso_results$lambda_cv
+lasso_model<- lasso_results$model
+lasso_mse <- lasso_results$mse
+lasso_mse_training <- lasso_results$mse_training
+lasso_rsq <- lasso_results$rsq
+lasso_rsq_training <- lasso_results$rsq_training
 
 ```
 
@@ -230,12 +276,28 @@ lasso_mse_binary <- lasso_results_binary[[6]]
 
 ```{r tree based models}
 # classic model
-standard_tree <- rpart(stars_review ~ cool_review + review_count_review + funny_review + stars_business + total_comments_business + BusinessAcceptsCreditCards + state + is_open, data = data_train)
-plot(standard_tree)
+standard_tree_spec1 <- rpart(stars_review ~ cool_review + useful + review_count + funny + stars_business + total_comments_business + BusinessAcceptsCreditCards + state + is_open + num_checkins_by_business, data = data_train)
+
+standard_tree_spec2 <- rpart(stars_review ~ ., data = data_train)
+
+predictions_tree <- predict(standard_tree_spec2, newdata = data_test)
+
+# Calculate RMSE and R-squared
+metrics <- metric_set(rmse, rsq)
+model_performance <- data_test %>%
+ mutate(predictions = predictions_tree) %>%
+ metrics(truth = stars_review, estimate = predictions)
+
 
 # bagging
+bagging_tree <- bagging(stars_review ~ ., data = data_train)
 
+predictions_bagging_tree <- predict(bagging_tree, newdata = data_test)
 
+# Calculate RMSE and R-squared
+model_performance <- data_test %>%
+ mutate(predictions = predictions_bagging_tree) %>%
+ metrics(truth = stars_review, estimate = predictions)
 
 ```
 
@@ -248,28 +310,36 @@ This project is aiming to predict user ratings on yelp using data on the reviews
 This data science project requires a methodology that is iterative, intuitive and suitable for an individual project. Given the absence of a business case or outside stakeholders, steps that included in methods such as CRISP-DM relating to the understanding of the business is only marginally relevant. Additionally, CRISP-DM is documentation heavy, which can be helpful in longer and larger projects but is less required for an individual project. The John Rallin DS methodology, TDSP and the KDD methodology are very similar in structure and contain irrelevant parts regarding to the business understanding and stakeholder involvement. Therefore, the OSEMN methodology is the most appropriate since it only covers the core parts of the aforementioned methodologies and is well suited for individual projects which require less documentation. Nevertheless, I will adapt the structure to include a phase for a clear problem definition. This is crucial despite the absence of other parties with interest in the project.
 
 ## Data Exploration
-The data exploration phase showed that the business data set includes useful information, however, some columns suffer from large shares of missing data, which negatively impacts its usefulness. Having a lot of missing values means that, if we want to include the variables, we need to drop a lot of reviews, leaving us with too few reviews and probably highly biased results given that the lack of data is probably not random. The tip data only includes additional comments made from a user to a business and can be omitted given the inclusion of the comments of the reviews from the review data set. The check-in data only contains the times a user looked at a particular business and is thereby of limited use. !! Maybe include graph showing relationship between number of check ins and stars given !!! Whilst the user data set contains valuable information that show significant correlation with our variable of interest, there is a large number of users in the review data set which are missing from the user data set. Thus the data will be of limited use if there is an insufficient degree of matches.
+The data exploration phase showed that the business data set includes useful information, however, some columns suffer from large shares of missing data, which negatively impacts its usefulness. Having a lot of missing values means that, if we want to include the variables, we need to drop a lot of reviews, leaving us with too few reviews and probably highly biased results given that the lack of data is probably not random. Nevertheless, as shown in the graph !! figure here !! the average business rating is highly correlated with the rating of a review and can thus serve as an important predictor. Similarly, businesses in different states tend to get different ratings wherefore it is sensible to include state or city dummies in our models. However, given that there are more than 1400 cities and the linked risk of overfitting, the city variable will not be used.  
+
+The tip data only includes additional comments made from a user to a business and can be omitted given the inclusion of the comments of the reviews from the review data set. The check-in data contains the times a user looked at a particular business. After aggregating the data, a slight negative non-linear relationship can be seen in the data. Thus it can be used as a feature. !! Maybe include graph showing relationship between number of check ins and stars given !!! 
+Whilst the user data set contains valuable information that show significant correlation with our variable of interest such as the number of weeks since a user joined yelp !!! Include graph: "yelping_since_fancy_plot" !!!, there are only 20% of the users in the review data set present in the user data set. This large number of missing users does not allow for inclusion, given the inability to construct meaningful averages to fill the data or the ignorance of the missing data points.
 
 !!! Include graphs here and discuss them !!!
-
-Discuss dropping of certain values
-
+- "business_review_comp"
+- "state_plot"
 
 ## Modeling
 ### Model choice
 Our data set contains a large number of parameters as well as a large number of observations. However, only few are likely to be highly correlated with our variable of interest. Variables such as the average number of stars given to a business are likely to by highly correlated with the number of stars of a review however, individual words taken from the review will only reveal low correlation !!! provide tables here !!!. In these cases, a less flexible model will do better since it trades off a bit of bias for a large reduction in the variance. The OLS regression can neither drop nor shrink the coefficient of certain features and is hence plagued by a high bias. Ridge and LASSO models both benefit from the ability to shrink coefficients hence reducing the negative impact of variables of low explanatory power and high multicolinearity.
 
 ### OLS regression
-Since we are not concerned with endogeneity, we can select various models to find the model which performs the best. However, including a large number of parameters will lead to poor performance given the high variance. The model $stars\_review_{ij} =   cool\_review_i + review\_count\_review_i + funny\_review_i + stars\_business_j + total\_comments\_business_j + BusinessAcceptsCreditCards_j + state_j + is_open_j + \epsilon_i $ !!! Include specification !!! performed the best on the test data set with a MSE of XXX. 
+Since we are not concerned with endogeneity, we can select various models to find the model which performs the best. However, including a large number of parameters will lead to poor performance given the high variance. The model $stars\_review_{ij} =   cool\_review_i+ cool\_review_i^2+ cool\_review_i^3 + review\_count_i + funny\_i + funny\_i^2 + funny\_i^3 + useful_i + useful_i^2 + useful_i^3 + stars\_business_j + total\_comments\_business_j  + state_j + is_open_j + num\_checkins\_business_j +  \epsilon_i $ performed the best on the test data set with a MSE of 1.54. Through including the squared and cubic terms, we can achieve a lower MSE since the relationship is, as seen in the data exploration phase, non-linear. Some features have been omitted since they did not lead to increases in model performance.
 
 ### Ridge and LASSO
-As mentioned above, LASSO and Ridge allow us to include more parameters without significantly increasing the variance. Despite a small increase in bias, the large decrease in variance has led to a significantly better performance, reaching a MSE of XXX using Ridge and a MSE of XXX. 
+As mentioned above, LASSO and Ridge allow us to include more parameters without significantly increasing the variance. Despite a small increase in bias, the large decrease in variance achieved through shrinking the coefficients has led to a significantly better performance, reaching a MSE of XXX using Ridge and a MSE of XXX using LASSO.
 Changing the data format slightly to only indicate the usage of a word without specifying the frequency, we can achieve an even better performance. This is due to the fact that often used words are prevented from getting too much weight. 
 
 ### Performance evaluation
 As mentioned above, the shrinkage estimators have a significant advantage over the OLS estimator due to the ability to either shrink the coefficient or perform variable selection. This advantage is reflected in a significantly lower MSE !! show all in table !! 
 
+| Performance/Model   | LRM           |  LASSO | Ridge  |
+|---------------------|:-------------:|:------:|:------:|
+| MSE on test data    |               |        |        |
+| MSE on training data|               |        |        |
 
+
+Regression trees are unlikely to perform well given the large number of parameters and the low levels of informativeness of each feature. Under these circumstances, a large tree would be required, leading to a high variance and poor performance. We cannot use Random Forests to decrease the variance due to the large number of parameters. 
 
 ## Project Challenges
 

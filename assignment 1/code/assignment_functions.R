@@ -13,18 +13,18 @@ count_empty_rows <- function(dataframe) {
   return(result)
 }
 
-trend_plot <- function(x_values){
-  plot <- ggplot(review_data_combined, mapping = aes(x = !!sym(x_values), y = stars_review)) +
-    geom_hex() + geom_smooth(method = "glm", formula = y ~ x + x^2 + x^3) + ylim(1,5)
+trend_plot <- function(x_values, limit){
+  plot <- ggplot(review_data_combined %>% filter(!!sym(x_values)<= I(0.5^limit)*max(!!sym(x_values), na.rm = TRUE)), mapping = aes(x = !!sym(x_values), y = stars_review)) +
+    geom_hex() + geom_smooth(method = "glm", formula = y ~ x + I(x^2) + I(x^3)) + ylim(1,5)
   return(plot)
 }
 
 shrinkage_estimator_computation <- function(lasso, trng_data_x_vals, trng_data_y_vals, test_data_x_vals, test_data_y_vals) {
-  cv_out <- cv.glmnet(as.matrix(trng_data_x_vals), as.matrix(trng_data_y_vals), alpha = lasso, nfolds = 3) # adapt the number of folds
+  cv_out <- cv.glmnet(as.matrix(trng_data_x_vals), as.matrix(trng_data_y_vals), alpha = lasso, nfolds = 10)
   cv_out_plot <- ggplot(data.frame(lambda = log(cv_out$lambda), cv_deviance = cv_out$cvm), aes(x = lambda, y = cv_deviance)) +
     geom_line() +
     scale_x_continuous(trans = "log", breaks = scales::trans_breaks("log", function(x) 10^x)) +
-    labs(x = "Log(lambda)", y = "Cross-Validated Mean Deviance")
+    labs(x = "Log(lambda)", y = "Mean Squared Error")
   lambda_cv <- cv_out$lambda.min
   
   #Re-Estimate Ridge with lambda chosen by Cross validation
@@ -33,41 +33,35 @@ shrinkage_estimator_computation <- function(lasso, trng_data_x_vals, trng_data_y
   #Fit on Test Data
   predictions <- predict(model, s = lambda_cv, newx = as.matrix(test_data_x_vals))
   mse <- mean((predictions - test_data_y_vals) ^ 2)
+  rsq <- 1 - mse / var(test_data_y_vals)
   
-  results <- list(cv_out, cv_out_plot, lambda_cv, model, predictions, mse)
+  # Fit on Training Data
+  predictions_training <- predict(model, s = lambda_cv, newx = as.matrix(trng_data_x_vals))
+  mse_training <- mean((predictions_training - trng_data_y_vals) ^ 2)
+  rsq_training <- 1 - mse_training / var(trng_data_y_vals)
+  
+  results <- list(cv_out = cv_out,
+                  cv_out_plot = cv_out_plot,
+                  lambda_cv = lambda_cv,
+                  model = model,
+                  predictions = predictions,
+                  mse = mse,
+                  rsq = rsq,
+                  predictions_training = predictions_training,
+                  mse_training = mse_training,
+                  rsq_training = rsq_training)
   return(results)
 }
 
 
-generate_final_df <- function(start, end){
-  sliced_df <- review_data_small[start:end, ]
-  
-  ## business data
-  empty_rows_business_data <- count_empty_rows(business_data_unnested)
-  cols_keep_business_data <- empty_rows_business_data %>% filter(`EmptyRows` < 35000 & !Column %in% c('name', 'address', 'latitude', 'longitude'))
-  business_data_selected <- dummy_cols(business_data_unnested[, cols_keep_business_data$Column], select_columns = 'state', remove_selected_columns = FALSE, remove_first_dummy  = TRUE) %>% mutate(BusinessAcceptsCreditCards = ifelse(BusinessAcceptsCreditCards == "True", 1, 0))
-  
-  ## tip data:
-  num_comments_by_business <- tip_data %>% group_by(business_id) %>% summarise(total_comments_business = n())
-  
-  # user data:
-  user_data_selected <- user_data_small  %>% mutate(yelping_since_weeks = round(as.numeric(difftime("2023-12-31 00:00:00", yelping_since, units = "weeks")), digits = 0), num_friends = ifelse(friends != "None", sapply(strsplit(friends, ","), function(x) length(x)), 0), total_compliments = select(., starts_with("compliment_")) %>% rowSums(na.rm = TRUE)) %>% mutate(was_elite = ifelse(nchar(elite) > 1, 1, 0))%>%  select(-c(name, yelping_since, friends))# explain why you aggregated compliments instead of using each individually
-  
-  # check in data
-  check_ins_by_business <- checkin_data  %>% mutate(num_checkins_by_business = ifelse(date != "None", sapply(strsplit(date, ","), function(x) length(x)), 0)) %>% select(-"date")
-  # merge other data sets onto review data which is the main one:
-  combined_df <- sliced_df %>% left_join(business_data_selected, by = 'business_id', suffix = c('_review', '_business')) %>% left_join(user_data_selected, by = 'user_id', suffix = c('_review', '_user')) %>% left_join(num_comments_by_business, by = 'business_id') %>% left_join(check_ins_by_business, by = "business_id")
-  # find all columns that have enough populated cells, drop the rest
-  combined_df_empty_rows <- count_empty_rows(combined_df) %>% filter(`EmptyRows` < 0.2*nrow(combined_df))
-  # drop all rows that have any remaining missing values after the columns have been selected since the models can't handle missing values
-  combined_df_filtered <- combined_df[, combined_df_empty_rows$Column] %>% na.omit()
-  
+generate_final_df <- function(start, end, comb_df){
+  df <- comb_df[start:end, ]
   ## add text
   cl <- makeCluster(detectCores())
   registerDoParallel(cl)
   
   ## prepare text for analysis:
-  corpus <- Corpus(VectorSource(combined_df_filtered$text))
+  corpus <- Corpus(VectorSource(df$text))
   
   ## Preprocess the text: remove punctuation and stop words
   corpus <- tm_map(corpus, tolower)
@@ -83,8 +77,8 @@ generate_final_df <- function(start, end){
   stopCluster(cl)
   
   ## we are now left with a matrix that could then be merged onto the other df because the order remains the same, i.e. row order is the same
-  tSparse$review_id <- combined_df_filtered$review_id
+  tSparse$review_id <- df$review_id
   
-  part_df <- combined_df_filtered %>% left_join(tSparse, by = 'review_id', suffix = c("_review", ""))
+  part_df <- df %>% left_join(tSparse, by = 'review_id', suffix = c("_review", ""))
   return(part_df)
 }
