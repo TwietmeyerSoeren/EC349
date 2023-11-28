@@ -165,11 +165,17 @@ combined_df_empty_rows <- count_empty_rows(combined_df) %>% filter(`EmptyRows` <
 # drop all rows that have any remaining missing values after the columns have been selected since the models can't handle missing values
 combined_df_filtered <- combined_df[, combined_df_empty_rows$Column] %>% na.omit()
 
+# reduce the file size to be able to deal with a lack of computing power
+set.seed(1)
+file_reduction_indeces <- sample(1:nrow(combined_df_filtered), nrow(combined_df_filtered) - 400000)
+combined_df_sliced <-combined_df_filtered[file_reduction_indeces,]
+
+
 ## temporary shortened version to test
 ## add the text from the comments in a cleaned way such that it can be included in our models
-df_part_one <- generate_final_df(1, 40000, combined_df_filtered)
-df_part_two <- generate_final_df(40001, 80000, combined_df_filtered)
-df_part_three <- generate_final_df(80001, 120000, combined_df_filtered)
+df_part_one <- generate_final_df(1, 40000, combined_df_sliced)
+df_part_two <- generate_final_df(40001, 80000, combined_df_sliced)
+df_part_three <- generate_final_df(80001, 120000, combined_df_sliced)
 
 # save the data frame so that we don't have to generate it over and over again
 df_combined <- bind_rows(df_part_one, df_part_two, df_part_three)
@@ -276,11 +282,9 @@ lasso_mse_binary <- lasso_results_binary[[6]]
 
 ```{r tree based models}
 # classic model
-standard_tree_spec1 <- rpart(stars_review ~ cool_review + useful + review_count + funny + stars_business + total_comments_business + BusinessAcceptsCreditCards + state + is_open + num_checkins_by_business, data = data_train)
+standard_tree_spec <- rpart(stars_review ~ ., data = data_train)
 
-standard_tree_spec2 <- rpart(stars_review ~ ., data = data_train)
-
-predictions_tree <- predict(standard_tree_spec2, newdata = data_test)
+predictions_tree <- predict(standard_tree_spec, newdata = data_test)
 
 # Calculate RMSE and R-squared
 metrics <- metric_set(rmse, rsq)
@@ -288,17 +292,20 @@ model_performance <- data_test %>%
  mutate(predictions = predictions_tree) %>%
  metrics(truth = stars_review, estimate = predictions)
 
+# Fit an xgboost model
+xgb_model <- xgboost(data = as.matrix(data_train[, !colnames(data_train) %in% c("stars_review", "state")]),
+                      label = data_train$stars_review,
+                      nrounds = 3,
+                      verbose = 1,
+                      objective = "reg:squarederror")
 
-# bagging
-bagging_tree <- bagging(stars_review ~ ., data = data_train)
+# Predictions on the test data
+predictions_xgboost <- predict(xgb_model, as.matrix(data_test[, !colnames(data_train) %in% c("stars_review", "state")]))
 
-predictions_bagging_tree <- predict(bagging_tree, newdata = data_test)
-
-# Calculate RMSE and R-squared
 model_performance <- data_test %>%
- mutate(predictions = predictions_bagging_tree) %>%
+ mutate(predictions = predictions_xgboost) %>%
  metrics(truth = stars_review, estimate = predictions)
-
+# gets a performance of 0.909 on the test data
 ```
 
 
@@ -321,10 +328,10 @@ Whilst the user data set contains valuable information that show significant cor
 
 ## Modeling
 ### Model choice
-Our data set contains a large number of parameters as well as a large number of observations. However, only few are likely to be highly correlated with our variable of interest. Variables such as the average number of stars given to a business are likely to by highly correlated with the number of stars of a review however, individual words taken from the review will only reveal low correlation !!! provide tables here !!!. In these cases, a less flexible model will do better since it trades off a bit of bias for a large reduction in the variance. The OLS regression can neither drop nor shrink the coefficient of certain features and is hence plagued by a high bias. Ridge and LASSO models both benefit from the ability to shrink coefficients hence reducing the negative impact of variables of low explanatory power and high multicolinearity.
+Our data set contains a large number of parameters as well as a large number of observations. However, only few are likely to be highly correlated with our variable of interest. Variables such as the average number of stars given to a business are likely to by highly correlated with the number of stars of a review however, individual words taken from the review will only reveal low correlation !!! provide tables here !!!. In these cases, a less flexible model will do better since it trades off a bit of bias for a large reduction in the variance which emergence due to the presence of many parameters. The OLS regression can neither drop nor shrink the coefficient of certain features and is hence plagued by this high variance. Ridge and LASSO models both benefit from the ability to shrink coefficients to pick the most predictive ones hence reducing the negative impact of variables of low explanatory power and high multicolinearity.
 
 ### OLS regression
-Since we are not concerned with endogeneity, we can select various models to find the model which performs the best. However, including a large number of parameters will lead to poor performance given the high variance. The model $stars\_review_{ij} =   cool\_review_i+ cool\_review_i^2+ cool\_review_i^3 + review\_count_i + funny\_i + funny\_i^2 + funny\_i^3 + useful_i + useful_i^2 + useful_i^3 + stars\_business_j + total\_comments\_business_j  + state_j + is_open_j + num\_checkins\_business_j +  \epsilon_i $ performed the best on the test data set with a MSE of 1.54. Through including the squared and cubic terms, we can achieve a lower MSE since the relationship is, as seen in the data exploration phase, non-linear. Some features have been omitted since they did not lead to increases in model performance.
+Since we are not concerned with endogeneity, we can select various models to find the model which performs the best. However, including a large number of parameters will lead to poor performance given the higher variance. The model $stars\_review_{ij} =   cool\_review_i+ cool\_review_i^2+ cool\_review_i^3 + review\_count_i + funny\_i + funny\_i^2 + funny\_i^3 + useful_i + useful_i^2 + useful_i^3 + stars\_business_j + total\_comments\_business_j  + state_j + is_open_j + num\_checkins\_business_j +  \epsilon_i $ performed the best on the test data set with a MSE of 1.54. Through including the squared and cubic terms, we can achieve a lower MSE since the relationship is, as seen in the data exploration phase, non-linear. Some features have been omitted since they did not lead to increases in model performance.
 
 ### Ridge and LASSO
 As mentioned above, LASSO and Ridge allow us to include more parameters without significantly increasing the variance. Despite a small increase in bias, the large decrease in variance achieved through shrinking the coefficients has led to a significantly better performance, reaching a MSE of XXX using Ridge and a MSE of XXX using LASSO.
@@ -340,6 +347,8 @@ As mentioned above, the shrinkage estimators have a significant advantage over t
 
 
 Regression trees are unlikely to perform well given the large number of parameters and the low levels of informativeness of each feature. Under these circumstances, a large tree would be required, leading to a high variance and poor performance. We cannot use Random Forests to decrease the variance due to the large number of parameters. 
+
+Boosting is able to achieve a performance comparable to the shrinkage estimators. This is due to the combination of bagging and learning. Bagging reduces the variance of the estimates by using averages and by letting the estimator explain the previously unexplained data points, a precise estimate can be achieved i.e. the ability to fit the previously unexplained parts of the data. 
 
 ## Project Challenges
 
