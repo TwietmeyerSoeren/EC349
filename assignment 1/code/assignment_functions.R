@@ -35,6 +35,10 @@ shrinkage_estimator_computation <- function(lasso, trng_data_x_vals, trng_data_y
   mse <- mean((predictions - test_data_y_vals) ^ 2)
   rsq <- 1 - mse / var(test_data_y_vals)
   
+  # coefficients
+  coefficients_model <- coef(model)[,] %>% as.data.frame() %>% rownames_to_column(var = "term") %>% setNames(c("term", "coefficient"))
+  coef_model_df_high_low <- rbind(coefficients_model[37:nrow(coefficients_model), ] %>% arrange(desc(coefficient)) %>% dplyr::slice(1:7), coefficients_model[37:nrow(coefficients_model), ] %>% arrange(coefficient) %>% dplyr::slice(1:7)) %>% arrange(desc(coefficient))
+  
   # Fit on Training Data
   predictions_training <- predict(model, s = lambda_cv, newx = as.matrix(trng_data_x_vals))
   mse_training <- mean((predictions_training - trng_data_y_vals) ^ 2)
@@ -49,7 +53,9 @@ shrinkage_estimator_computation <- function(lasso, trng_data_x_vals, trng_data_y
                   rsq = rsq,
                   predictions_training = predictions_training,
                   mse_training = mse_training,
-                  rsq_training = rsq_training)
+                  rsq_training = rsq_training, 
+                  coefficients_model = coefficients_model,
+                  coef_model_df_high_low = coef_model_df_high_low)
   return(results)
 }
 
