@@ -1,8 +1,8 @@
 ---
-title: "assignment start"
+title: "assignment 1 EC349"
 author: "Sören Twietmeyer"
 date: "`r Sys.Date()`"
-output: bookdown::html_document2
+output: html_document
 ---
 <style>
 body {
@@ -31,10 +31,10 @@ library(rpart)
 library(tidymodels)
 library(ggpubr)
 library(xgboost)
+library(SnowballC)
 getwd()
 conflicts_prefer(dplyr::summarise(), dplyr::filter, dplyr::mutate())
 ```
-
 ```{r Load data and functions, include = FALSE, message=FALSE}
 # Load Different Data
 business_data <- stream_in(file("../data/yelp_academic_dataset_business.json"))
@@ -49,7 +49,6 @@ load("../data/yelp_user_small.Rda")
 # source functions
 source("../code/assignment_functions.R")
 ```
-
 ```{r Data Exploration, include=FALSE, message=FALSE, warning=FALSE}
 # business data
 #str(business_data_unnested)
@@ -127,7 +126,7 @@ num_checkins_plot <- ggplot(review_data_combined, mapping = aes(x = num_checkins
 ```
 
 ## Data Exploration
-The data exploration phase showed that the business data set includes useful information, however, some columns suffer from large shares of missing data, which negatively impacts its usefulness. Having a lot of missing values means that, if we want to include the variables, we need to drop a lot of reviews, leaving us with too few reviews and probably highly biased results given that the lack of data is probably not random. Nevertheless, as shown in the graph !! figure here !! the average business rating is highly correlated with the rating of a review and can thus serve as an important predictor. Similarly, businesses in different states tend to get different ratings wherefore it is sensible to include state or city dummies in our models. However, given that there are more than 1400 cities and the linked risk of overfitting, the city variable will not be used.  
+The data exploration phase showed that the business data set includes useful information, however, some columns suffer from large shares of missing data, which negatively impacts its usefulness. Having a lot of missing values means that, if we want to include the variables, we need to drop a lot of reviews, leaving us with too few reviews. Nevertheless, as shown in the graph below, the average business rating is highly positively correlated with the rating of a review and can thus serve as an important predictor. Similarly, businesses in different states tend to get different ratings wherefore it is sensible to include state or city dummies in our models. However, given that there are more than 1400 cities and the linked risk of overfitting, the city variable will not be used. The characteristics useful, funny, cool show a non-linear relationship, which is why a squared and cubic term is added for each.  
 
 ```{r business review plot, echo=FALSE, warning=FALSE, fig.cap="Graph showing the strong positive correlation between business ratings and user reviews.", fig.align='center', fig.id=TRUE}
 business_review_comp
@@ -138,14 +137,13 @@ state_plot
 ```
 
 The tip data only includes additional comments made from a user to a business and can be omitted given the inclusion of the comments of the reviews from the review data set. The check-in data contains the times a user looked at a particular business. After aggregating the data, a slight negative non-linear relationship can be seen in the data. Thus it can be used as a feature.
-Whilst the user data set contains valuable information that show significant correlation with our variable of interest such as the number of weeks since a user joined yelp, there are only 20% of the users in the review data set present in the user data set. Therefore, we are unable to construct meaningful averages to fill the data or ignore the missing data points forcing us to omit the data entirely.
+Whilst the user data set contains valuable information that show significant correlation with our variable of interest such as the number of weeks since a user joined yelp (see graph below), there are only 20% of the users in the review data set present in the user data set. Therefore, we are unable to construct meaningful averages to fill the data or ignore the missing data points forcing us to omit the data entirely.
 
 ```{r yelping since plot, echo = FALSE, warning=FALSE, fig.cap="Graph showing the slight positive relationship between the length of usership and user reviews.", fig.align='center', fig.id=TRUE}
 yelping_since_fancy_plot
 ```
-
+```{r data manipulation, warning = FALSE, include = FALSE}
 ## Data Manipulation
-```{r data manipulation, warning = FALSE}
 # create one data frame that contains all the useful information 
 ## business data
 cols_keep_business_data <- count_empty_rows(business_data_unnested) %>% filter(`EmptyRows` < 0.25*nrow(business_data_unnested) & !Column %in% c('name', 'address', 'latitude', 'longitude'))
@@ -164,15 +162,15 @@ combined_df_empty_rows <- count_empty_rows(combined_df) %>% filter(`EmptyRows` <
 # drop all rows that have any remaining missing values after the columns have been selected since the models can't handle missing values
 combined_df_filtered <- combined_df[, combined_df_empty_rows$Column] %>% na.omit()
 
-# reduce the file size to be able to deal with a lack of computing power
+# This reduces the file sizes due to the lack of sufficient computing power, to be removed if more is available
 set.seed(1)
-file_reduction_indeces <- sample(1:nrow(combined_df_filtered), nrow(combined_df_filtered) - 400000)
+file_reduction_indeces <- sample(1:nrow(combined_df_filtered), nrow(combined_df_filtered) - 900000)
 combined_df_sliced <-combined_df_filtered[file_reduction_indeces,]
 
 ## add the text from the comments in a cleaned way such that it can be included in our models
-df_part_one <- generate_final_df(1, 270000, combined_df_sliced)
-df_part_two <- generate_final_df(270001, 540000, combined_df_sliced)
-df_part_three <- generate_final_df(540001, nrow(combined_df_sliced), combined_df_sliced)
+df_part_one <- generate_final_df(1, 100000, combined_df_sliced)
+df_part_two <- generate_final_df(100001, 200000, combined_df_sliced)
+df_part_three <- generate_final_df(200001, nrow(combined_df_sliced), combined_df_sliced)
 
 # save the data frame so that we don't have to generate it over and over again
 df_combined <- bind_rows(df_part_one, df_part_two, df_part_three)
@@ -182,10 +180,10 @@ cols_to_change <- colnames(df_combined)[46:length(colnames(df_combined))]
 df_combined_updated <- df_combined %>% mutate_at(vars(cols_to_change), ~replace_na(., 0))
 
 ```
-
 ## Modelling
-```{r test and training set generation}
-final_dataset <- df_combined_updated %>%  select(-c("date", "text", starts_with("compliment_"), "review_id", "business_id", "user_id", "city", "postal_code", "categories")) %>% mutate(useful_sq = I(useful^2), useful_cube = I(useful^3), funny_sq = I(funny^2), funny_cube = I(funny^3), cool_review_sq = I(cool_review^2), cool_review_cube = I(cool_review^3), num_checkins_by_business_sq = I(num_checkins_by_business^2), num_checkins_by_business_cube = I(num_checkins_by_business^3))
+```{r test and training set generation, include = FALSE}
+## Modelling
+final_dataset <- df_combined_updated %>%  select(-c("date", "text", starts_with("compliment_"), "review_id", "business_id", "user_id", "city", "postal_code", "categories", "state")) %>% mutate(useful_sq = I(useful^2), useful_cube = I(useful^3), funny_sq = I(funny^2), funny_cube = I(funny^3), cool_review_sq = I(cool_review^2), cool_review_cube = I(cool_review^3), num_checkins_by_business_sq = I(num_checkins_by_business^2), num_checkins_by_business_cube = I(num_checkins_by_business^3))
 
 #Split data into test and training
 set.seed(1)
@@ -196,24 +194,27 @@ data_train <-final_dataset[train,]
 data_test <- final_dataset[-train,]
 
 # for shrinkage estimators we need to transform data into matrices, therefore we need the following transformation: 
-data_train_x <-data_train[,!colnames(data_train) %in% c("stars_review", "state")]
+data_train_x <-data_train[,!colnames(data_train) %in% c("stars_review")]
 data_train_y <-data_train[,c("stars_review")]
 
-data_test_x <-data_test[, !colnames(data_test) %in% c("stars_review", "state")]
+data_test_x <-data_test[, !colnames(data_test) %in% c("stars_review")]
 data_test_y <-data_test[,c("stars_review")]
 ```
-
 ```{r modelling and performance testing, warning=FALSE, include=FALSE}
 ### Linear Models
-##Linear Regression Model of stars given for a review as a function of user, business, and review characteristics
-lm_stars<- lm(stars_review ~ cool_review + I(cool_review^2) + I(cool_review^3) + review_count + useful + I(useful^2)+ I(useful^3) + funny + I(funny^2) + I(funny^3)+ stars_business + total_comments_business + state + is_open + num_checkins_by_business + I(num_checkins_by_business^2) + I(num_checkins_by_business^3) + worst + terribl + rude + money + lack + dri + wont + thank + best + profession + fantast + excel + awesom + amaz, data = data_train)
 lm_stars <- lm(stars_review ~., data = data_train)
+
+# Evaluation of model
+model_performance_lm_training <- summary(lm_stars)
 
 #Prediction to test data
 lm_stars_predict<-predict(lm_stars, newdata = data_test[, !colnames(data_test) %in% c("stars_review")])
 
-#Empirical MSE in TEST data
-lm_stars_test_mse<-mean((lm_stars_predict-data_test$stars_review)^2)
+#Evaluation of lm on test:
+metrics <- metric_set(rmse, rsq)
+model_performance_lm <- data_test %>%
+ mutate(predictions = lm_stars_predict) %>%
+ metrics(truth = stars_review, estimate = predictions)
 
 ## LASSO and Ridge
 ridge_results <- shrinkage_estimator_computation(0, data_train_x, data_train_y, data_test_x, data_test_y)
@@ -229,8 +230,6 @@ coefficients_ridge <- ridge_results$coefficients_model
 highest_lowest_coefficients_ridge <- ridge_results$coef_model_df_high_low
 
 coef_plot_ridge <- ggplot(data = highest_lowest_coefficients_ridge, mapping = aes(reorder(term, coefficient, sum), coefficient)) + geom_col() + labs(x = "Word used", y = "Coefficient", title = "Coefficients of words used in review")
-
-# for ridge, only 65 features have a coefficient larger than 0.1 view(coefficients_ridge %>% filter(coefficient_abs_value > 0.1))
 
 #LASSO with Cross-Validation
 lasso_results <- shrinkage_estimator_computation(1, data_train_x, data_train_y, data_test_x, data_test_y)
@@ -257,23 +256,13 @@ data_train_binary <-adapted_df[train,]
 data_test_binary <- adapted_df[-train,]
 
 # for shrinkage estimators we need to transform data into matrices, therefore we need the following transformation: 
-data_train_binary_x <-data_train_binary[,!colnames(data_train_binary) %in% c("stars_review", "state")]
+data_train_binary_x <-data_train_binary[,!colnames(data_train_binary) %in% c("stars_review")]
 data_train_binary_y <-data_train_binary[,c("stars_review")]
 
-data_test_binary_x <-data_test_binary[, !colnames(data_test_binary) %in% c("stars_review", "state")]
+data_test_binary_x <-data_test_binary[, !colnames(data_test_binary) %in% c("stars_review")]
 data_test_binary_y <-data_test_binary[,c("stars_review")]
 
-# application on LASSO and Ridge
-ridge_results_binary <- shrinkage_estimator_computation(0, data_train_binary_x, data_train_binary_y, data_test_binary_x, data_test_y)
-cv_out_ridge_binary <- ridge_results_binary$cv_out
-plot_cv_out_ridge_binary <- ridge_results_binary$cv_out_plot
-lambda_ridge_cv_binary <- ridge_results_binary$lambda_cv
-ridge_model_binary <- ridge_results_binary$model
-ridge_mse_binary <- ridge_results_binary$mse
-ridge_mse_training_binary <- ridge_results_binary$mse_training
-ridge_rsq_binary <- ridge_results_binary$rsq
-ridge_rsq_training_binary <- ridge_results$rsq_training
-
+# application on LASSO
 #LASSO with Cross-Validation
 lasso_results_binary <- shrinkage_estimator_computation(1, data_train_binary_x, data_train_y, data_test_binary_x, data_test_binary_y)
 cv_out_lasso_binary <- lasso_results_binary$cv_out
@@ -292,51 +281,62 @@ standard_tree_spec <- rpart(stars_review ~ ., data = data_train)
 predictions_tree <- predict(standard_tree_spec, newdata = data_test)
 
 # Calculate RMSE and R-squared
-metrics <- metric_set(rmse, rsq)
 model_performance <- data_test %>%
  mutate(predictions = predictions_tree) %>%
  metrics(truth = stars_review, estimate = predictions)
 
 # Fit an xgboost model
-xgb_model <- xgboost(data = as.matrix(data_train[, !colnames(data_train) %in% c("stars_review", "state")]),
+xgb_model <- xgboost(data = as.matrix(data_train[, !colnames(data_train) %in% c("stars_review")]),
                       label = data_train$stars_review,
                       nrounds = 100,
-                      verbose = 1,
+                      verbose = 0,
                       objective = "reg:squarederror", 
                       eta = 0.25, 
                       max_depth = 8)
 
 # Predictions on the test data
-predictions_xgboost <- predict(xgb_model, as.matrix(data_test[, !colnames(data_train) %in% c("stars_review", "state")]))
+predictions_xgboost <- predict(xgb_model, as.matrix(data_test[, !colnames(data_train) %in% c("stars_review")]))
 
 model_performance_xgboost <- data_test %>%
  mutate(predictions = predictions_xgboost) %>%
  metrics(truth = stars_review, estimate = predictions)
+
 ```
-Our data set contains a large number of parameters as well as a large number of observations. However, only few are likely to be highly correlated with our variable of interest. Variables such as the average number of stars given to a business are likely to by highly correlated with the number of stars of a review however, individual words taken from the review will only reveal low correlation. In these cases, models performing variable selection/ shrinking will do better since they are able to largely reduce the variance which emergence due to the presence of many parameters. The OLS regression can neither drop nor shrink the coefficient of certain features and is hence plagued by this high variance. Ridge and LASSO models both benefit from the ability to shrink coefficients to pick the most predictive ones hence reducing the negative impact of variables of low explanatory power and high multicolinearity.
 
-### OLS regression
-Since we are not concerned with endogeneity, we can select various models to find the model which performs the best. However, including a large number of parameters will lead to poor performance given the higher variance. The model $stars\_review_{ij} =   cool\_review_i+ cool\_review_i^2+ cool\_review_i^3 + review\_count_i + funny_i + funny_i^2 + funny_i^3 + useful_i + useful_i^2 + useful_i^3 + stars\_business_j + total\_comments\_business_j  + state_j + is\_open_j + num\_checkins\_business_j + num\_checkins\_business_j^2 + num\_checkins\_business_j^3 + \epsilon_i$ performed the best on the test data set with a MSE of 1.54. Through including the squared and cubic terms, we can achieve a lower MSE since the relationship is, as seen in the data exploration phase, non-linear. Some features have been omitted since they did not lead to increases in model performance. The high variance of the OLS regression, caused by the adherence to the low bias, leads to a relatively poor performance. 
-
-### Ridge and LASSO
-As mentioned above, LASSO and Ridge allow us to include more parameters without significantly increasing the variance. Despite a small increase in bias, the large decrease in variance achieved through shrinking the coefficients has led to a significantly better performance, reaching a MSE of XXX using Ridge and a MSE of XXX using LASSO. Additionally, the text is unlikely to be related in a highly non-linear way, wherefore LASSO and Ridge both perform well. The remaining variables are potentially related in a non-linear way, however the failure to capture these relationships attenuated by the inclusion of the text. 
-Changing the data format slightly to only indicate the usage of a word without specifying the frequency, we can achieve an even better performance. This is due to the fact that often used words are prevented from getting too much weight. 
+### Model choice
+Whilst the reviews are given in integers, it is an ordered variable, which nevertheless has an underlying continuous meaning. Therefore, we can use regression methods to predict the outcome instead of classification methods.
+Our data set contains a small number of parameters relative to a large number of observations. However, only few variables such as the average number of stars given to a business are likely to be highly correlated with our variable of interest. In these cases, models performing variable selection/ shrinking will do better since they are able to largely reduce the variance which emerges due to the presence of many parameters. Ridge and LASSO models both benefit from the ability to shrink coefficients to pick the most predictive ones hence reducing the negative impact of variables of low explanatory power. Additionally, the text is unlikely to be related in a highly non-linear way, wherefore the linear models perform well. This is amplified by the inclusion of non-linear terms that account for some of the non-linear relationships and by the fact that the strongest predictors from the review and business characteristics are linearly related to the outcome. 
 
 ### Performance evaluation
-As mentioned above, the shrinkage estimators have a significant advantage over the OLS estimator due to the ability to either shrink the coefficient or perform variable selection. This advantage is reflected in a significantly lower MSE. 
+#### Linear models
 
-| Performance/Model   | LRM           |  LASSO | Ridge  |
-|:--------------------|:-------------:|:------:|:------:|
-| MSE on test data    |               |        |        |
-| MSE on training data|               |        |        |
-| $R^2$ on test data  |               |        |        |
-| $R^2$ on training data|               |        |        |
+| Performance/Model   | LRM           |  LASSO | Ridge  | LASSO binary |
+|:--------------------|:-------------:|:------:|:------:|:------:|
+| MSE on test data    |0.96           | 0.96   |0.97    | 0.91   |
+| MSE on training data| 0.97          | 0.95   |0.96    | 0.88   |
+| $R^2$ on test data  | 0.54          | 0.53   |0.54    | 0.56   |
+| $R^2$ on training data|0.54         | 0.54   |0.54    | 0.57   |
 
-Regression trees are unlikely to perform well given the large number of parameters and the low levels of informativeness of each feature. Under these circumstances, a large tree would be required, leading to a high variance and poor performance. Using Random Forests will lead to poor performance due to the large number of parameters and few good predictors. 
-Nevertheless, boosting is able to achieve a performance comparable to the shrinkage estimators. This is due to the combination of bagging and learning ad the ability to capture non-linear relationships between the variables. Bagging reduces the variance of the estimates by using averages and by letting the estimator explain the previously unexplained data points, a precise estimate can be achieved.
+Ridge and LASSO can shrink the estimators to reduce the variance of the estimators. However, given the large number of observations and relatively small number of parameters, the variance of the OLS estimator is already relatively low. In combination with the cross-validated lambda being very close to zero for both Ridge and LASSO explains why they don't outperform OLS. The small decrease in variance that can be obtained through shrinking is made redundant by the increase in bias
+A better performance can be achieved by changing the data format slightly to only indicate the usage of a word without specifying the frequency. This is due to the fact that often used words are prevented from getting too much weight.
+
+Including the text of reviews leads to a significant increase in performance given the relatively large informativeness of some words as shown in the graph of the coefficients for shrinkage estimators.
+```{r coefficient plot of SE ,echo=FALSE, warning=FALSE, fig.cap="The seven highest and seven lowest LASSO coefficients on the text used in reviews.", fig.align='center', fig.id=TRUE}
+coef_plot_lasso
+```
+#### Non-linear models
+Regression trees are unlikely to perform well given that there are over 500 parameters and the low levels of informativeness of each feature. Under these circumstances, a large tree would be required, leading to a high variance and poor performance. Using Random Forests to decrease the variance will lead to poor performance due to the large number of parameters and few good predictors, as evidenced by the fact that only around 12% of features have a an absolute value of the coefficient larger than 0.1.
+Nevertheless, boosting is able to achieve a performance comparable to the shrinkage estimators. This is due to the combination of bagging and learning and the ability to capture non-linear relationships between the variables. Bagging reduces the variance of the estimates by using averages and by letting the estimator explain the previously unexplained data points, a precise estimate can be achieved. By reducing the learning rate, we can achieve a lower MSE due to the prevention of overfitting. 
+
+| Performance/Model   | Unpruned Tree|  Boosted Tree |
+|:--------------------|:-------------:|:------:|
+| MSE on test data    |1.21|0.86|
+| $R^2$ on test data  | 0.30             | 0.64   |
+
+The merely marginal difference between the linear and non-linear methods can be explained by the likely linear relationship between the explanatory and outcome variables. It is unlikely that the variables such as the words are related in a highly non-linear way in which case boosted trees would perform better. Additionally, the strong predictors such as business characteristics are related in a linear way further highlighting why more flexible models don't significantly outperform linear models. 
 
 ## Project Challenges
-A major challenge during the project was to determine what is required of the data, how the data can be transformed to be made useful and how the ultimate goal of prediction can best be reached. However, using an iterative approach of exploring the data, assessing its usefulness whilst referring to the initial goal has proven itself particularly instructive. Applying the same strategy to the modelling phase was equally effective.
+A major challenge during the project was to determine what data structure is required, how the data can be transformed to be made useful and how the ultimate goal of prediction can best be reached. Due to the lack of prior experience in text analysis, understanding how to prepare text and which models perform well with text-based data was challenging. However, using an iterative approach of exploring the data, assessing its usefulness whilst referring to the initial goal has proven itself particularly instructive. Applying the same strategy to the modelling phase was equally effective.
 
 ## Statement of Academic Integrity
 We're part of an academic community at Warwick.
@@ -365,14 +365,14 @@ Privacy statement
 
 The data on this form relates to your submission of coursework. The date and time of your submission, your identity, and the work you have submitted will be stored. We will only use this data to administer and record your coursework submission.
 
-Related articles (https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fwarwick.ac.uk%2Fservices%2Fgov%2Fcalendar%2Fsection2%2Fregulations%2Facademic_integrity%2F&data=05%7C01%7CSoeren.Twietmeyer%40warwick.ac.uk%7C712480e0fa474f30a32208dbf193083d%7C09bacfbd47ef446592653546f2eaf6bc%7C0%7C0%7C638369386071528461%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C3000%7C%7C%7C&sdata=LvxJFDdmxw35SUoFzS0TkpCD7X9LEpairvIN6Jc13bY%3D&reserved=0)
+Related articles:
 
-Reg. 11 Academic Integrity (from 4 Oct 2021) (https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fwarwick.ac.uk%2Fservices%2Faro%2Fdar%2Fquality%2Faz%2Facintegrity%2Fframework%2Fguidancereg11%2F&data=05%7C01%7CSoeren.Twietmeyer%40warwick.ac.uk%7C712480e0fa474f30a32208dbf193083d%7C09bacfbd47ef446592653546f2eaf6bc%7C0%7C0%7C638369386071537704%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C3000%7C%7C%7C&sdata=6LkwxuBqkfuytAHv8NbckOYEEU5xGvdbJaQO%2BrNHZDw%3D&reserved=0)
+[Reg. 11 Academic Integrity (from 4 Oct 2021)](https://warwick.ac.uk/services/gov/calendar/section2/regulations/academic_integrity/)
 
-Guidance on Regulation 11 (https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fwarwick.ac.uk%2Fservices%2Faro%2Fdar%2Fquality%2Fcategories%2Fexaminations%2Fpolicies%2Fv_proofreading%2F&data=05%7C01%7CSoeren.Twietmeyer%40warwick.ac.uk%7C712480e0fa474f30a32208dbf193083d%7C09bacfbd47ef446592653546f2eaf6bc%7C0%7C0%7C638369386071544268%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C3000%7C%7C%7C&sdata=lZU%2B81ge6eDnBDczFj3wOzVlyUKD%2FsUUkr8o%2FR7NAuw%3D&reserved=0)
+[Guidance on Regulation 11](https://warwick.ac.uk/services/aro/dar/quality/az/acintegrity/framework/guidancereg11/)
 
-Proofreading Policy (https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fwarwick.ac.uk%2Fservices%2Faro%2Fdar%2Fquality%2Faz%2Facintegrity%2Fframework%2Fguidancereg11%2F&data=05%7C01%7CSoeren.Twietmeyer%40warwick.ac.uk%7C712480e0fa474f30a32208dbf193083d%7C09bacfbd47ef446592653546f2eaf6bc%7C0%7C0%7C638369386071550863%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C3000%7C%7C%7C&sdata=3MpWklCOg0ghrmY1TLdjSNSYr9oTSyDShMN9A4UJRrc%3D&reserved=0)
+[Proofreading Policy](https://warwick.ac.uk/services/aro/dar/quality/categories/examinations/policies/v_proofreading/)
 
-Education Policy and Quality Team (https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fwarwick.ac.uk%2Fservices%2Faro%2Fdar%2Fquality%2Faz%2Facintegrity%2Fframework%2Fguidancereg11%2F&data=05%7C01%7CSoeren.Twietmeyer%40warwick.ac.uk%7C712480e0fa474f30a32208dbf193083d%7C09bacfbd47ef446592653546f2eaf6bc%7C0%7C0%7C638369386071550863%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C3000%7C%7C%7C&sdata=3MpWklCOg0ghrmY1TLdjSNSYr9oTSyDShMN9A4UJRrc%3D&reserved=0)
+[Education Policy and Quality Team](https://warwick.ac.uk/services/aro/dar/quality/az/acintegrity/framework/guidancereg11/)
 
-Academic Integrity (warwick.ac.uk) (https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fwarwick.ac.uk%2Fstudents%2Flearning-experience%2Facademic_integrity&data=05%7C01%7CSoeren.Twietmeyer%40warwick.ac.uk%7C712480e0fa474f30a32208dbf193083d%7C09bacfbd47ef446592653546f2eaf6bc%7C0%7C0%7C638369386071557453%7CUnknown%7CTWFpbGZsb3d8eyJWIjoiMC4wLjAwMDAiLCJQIjoiV2luMzIiLCJBTiI6Ik1haWwiLCJXVCI6Mn0%3D%7C3000%7C%7C%7C&sdata=RjQCj2upSBuExQpXwhDvkPDvhw1wvFg%2BRzpGXjlbceQ%3D&reserved=0)
+[Academic Integrity](https://warwick.ac.uk/students/learning-experience/academic_integrity)
