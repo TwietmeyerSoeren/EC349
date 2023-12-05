@@ -1,5 +1,5 @@
 ---
-title: "assignment 1 EC349"
+title: "Assignment 1 EC349"
 author: "Sören Twietmeyer"
 date: "`r Sys.Date()`"
 output: html_document
@@ -9,12 +9,13 @@ body {
 text-align: justify}
 </style>
 # EC349 Assignment 1: Analysis of Yelp Data
+Note: The code can also be found on [GitHub](https://github.com/TwietmeyerSoeren/EC349)
 
 ## Outline of the goal
 This project is aiming to predict user ratings on Yelp using data on the reviews submitted, the user, the business as well as data on additional comments made about a particular business. The goal is to achieve a precise prediction given the information available and does not require an evaluation of the reviews themselves, i.e., why users gave a specific review. This will allow us to trade off interpretability of our models for gains in performance. 
 
 ## Methodology
-This data science project requires a methodology that is iterative, intuitive and suitable for an individual project. Given the absence of a business case, steps included in methods such as CRISP-DM relating to the understanding of the business is only marginally relevant. Additionally, CRISP-DM is documentation heavy, which can be helpful in longer and larger projects but is less required for an individual project. The John Rallin DS methodology, TDSP and the KDD methodology are very similar in structure and contain irrelevant parts regarding the business understanding and stakeholder involvement. The OSEMN methodology is the most appropriate since it only covers the core parts of the aforementioned methodologies and is well suited for individual projects which require less documentation. Nevertheless, I will adapt the structure to include a phase for a clear problem definition. This is crucial despite the absence of other parties with interest in the project.
+This data science project requires a methodology that is iterative, intuitive and suitable for an individual project. Given the absence of a business case, steps included in methods such as CRISP-DM relating to the understanding of the business are only marginally relevant. Additionally, CRISP-DM is documentation heavy, which can be helpful in longer and larger projects but is less required for an individual project. The John Rallin DS methodology, TDSP and the KDD methodology are very similar in structure and contain irrelevant parts regarding the business understanding and stakeholder involvement. The OSEMN methodology is the most appropriate since it only covers the core parts of the aforementioned methodologies and is well suited for individual projects which require less documentation. Nevertheless, I have adapted the structure to include a phase for a clear problem definition. This is crucial despite the absence of other parties with interest in the project.
 ```{r setup, warning=FALSE, include=FALSE, message=FALSE}
 rm(list = ls())
 library(conflicted)
@@ -88,13 +89,13 @@ review_data_combined <- review_data_small %>% left_join(business_data_unnested[,
 #view(count_empty_rows(review_data_combined))
 
 # business info:
-business_review_comp <- ggplot(review_data_combined, mapping = aes(x = stars_business, y = stars_review)) + geom_hex() + geom_smooth(method = "glm", formula = y ~ x + I(x^2) + I(x^3)) + ylim(1,5) + labs(x = "Mean rating of a business", y = "User Rating", title = str_wrap("Relationship between user ratings and average business ratings", 50)) + theme_pubr()+ theme(legend.title = element_blank(), legend.position = 'right', legend.key.height = unit(1.5, 'cm'),text = element_text(colour = 'black', size = 16)) 
+business_review_comp <- ggplot(review_data_combined, mapping = aes(x = stars_business, y = stars_review)) + geom_hex() + geom_smooth(method = "glm", formula = y ~ x + I(x^2) + I(x^3)) + ylim(1,5) + labs(x = "Mean rating of a business", y = "User Rating") + theme_pubr()+ theme(legend.title = element_blank(), legend.position = 'right', legend.key.height = unit(1.5, 'cm'),text = element_text(colour = 'black', size = 12)) 
 
 num_coms_business <- trend_plot("total_comments_business", 1)
 
 city_plot <- ggplot(review_data_combined %>% group_by(city) %>% dplyr::summarise(mean_by_city = mean(stars_review)), mapping = aes(x = city, y= mean_by_city)) + geom_col() # clear differences in average ratings by city
 
-state_plot <- ggplot(review_data_combined %>% group_by(state) %>% dplyr::summarise(mean_by_state = mean(stars_review)), mapping = aes(x = state, y= mean_by_state)) + geom_col() + labs(x = "State", y = "Mean Rating", title = "Average rating in each state") + theme_pubr()+ theme(text = element_text(colour = 'black', size = 12)) # clear differences in average ratings by state
+state_plot <- ggplot(review_data_combined %>% group_by(state) %>% dplyr::summarise(mean_by_state = mean(stars_review)), mapping = aes(x = state, y= mean_by_state)) + geom_col() + labs(x = "State", y = "Mean Rating") + theme_pubr()+ theme(text = element_text(colour = 'black', size = 12)) # clear differences in average ratings by state
 
 credit_card_plot <- trend_plot("BusinessAcceptsCreditCards", 0) # slight downward trend
 mean(review_data_combined$BusinessAcceptsCreditCards, na.rm = TRUE)
@@ -118,7 +119,7 @@ compliments_count_plot <- trend_plot("total_compliments", 1) ## slight positive 
 
 yelp_since_plot <- trend_plot("yelping_since_weeks", 0) ## slight positive relationship
 yelping_since_fancy_plot <- ggplot(review_data_combined, mapping = aes(x = yelping_since_weeks, y = stars_review)) +
-  geom_hex() + geom_smooth(method = "glm", formula = y ~ x + I(x^2) + I(x^3)) + ylim(1,5) + labs(x = "Number of weeks since a user joined Yelp", y = "User Rating", title = "Relationship length of Yelp usership and ratings") + theme_pubr()+ theme(legend.title = element_blank(), legend.position = 'right', legend.key.height = unit(1, 'cm'),text = element_text(colour = 'black', size = 12)) 
+  geom_hex() + geom_smooth(method = "glm", formula = y ~ x + I(x^2) + I(x^3)) + ylim(1,5) + labs(x = "Number of weeks since a user joined Yelp", y = "User Rating") + theme_pubr()+ theme(legend.title = element_blank(), legend.position = 'right', legend.key.height = unit(1, 'cm'),text = element_text(colour = 'black', size = 12)) 
 
 # check-in data
 num_checkins_plot <- ggplot(review_data_combined, mapping = aes(x = num_checkins_by_business, y = stars_review)) +
@@ -126,20 +127,20 @@ num_checkins_plot <- ggplot(review_data_combined, mapping = aes(x = num_checkins
 ```
 
 ## Data Exploration
-The data exploration phase showed that the business data set includes useful information, however, some columns suffer from large shares of missing data, which negatively impacts its usefulness. Having a lot of missing values means that, if we want to include the variables, we need to drop a lot of reviews, leaving us with too few reviews. Nevertheless, as shown in the graph below, the average business rating is highly positively correlated with the rating of a review and can thus serve as an important predictor. Similarly, businesses in different states tend to get different ratings wherefore it is sensible to include state or city dummies in our models. However, given that there are more than 1400 cities and the linked risk of overfitting, the city variable will not be used. The characteristics useful, funny, cool show a non-linear relationship, which is why a squared and cubic term is added for each.  
+The data exploration phase showed that the business data set includes useful information, however, some columns suffer from large shares of missing data, which negatively impacts its usefulness. Having a lot of missing values means that, if we want to include the variables, we need to drop a lot of reviews, leaving us with too few reviews, thus negatively impacting performance. Nevertheless, as shown in the graph below, the average business rating is highly positively correlated with the rating of a review and can thus serve as an important predictor. Similarly, businesses in different states tend to get different ratings, wherefore it is sensible to include state or city dummies in our models. However, given that there are more than 1400 cities and the linked risk of overfitting, the city variable will not be used. The characteristics useful, funny, cool show a non-linear relationship, which is why a squared and cubic term is added for each.  
 
-```{r business review plot, echo=FALSE, warning=FALSE, fig.cap="Graph showing the strong positive correlation between business ratings and user reviews.", fig.align='center', fig.id=TRUE}
+```{r business review plot, echo=FALSE, warning=FALSE, fig.cap="Relationship between user ratings and average business ratings.", fig.align='center', fig.id=TRUE}
 business_review_comp
 ```
 
-```{r state plot, echo=FALSE, warning=FALSE, fig.cap="Graph showing differences in user ratings between different states.", fig.align='center', fig.id=TRUE}
+```{r state plot, echo=FALSE, warning=FALSE, fig.cap="Average rating of businesses in each state.", fig.align='center', fig.id=TRUE}
 state_plot
 ```
 
-The tip data only includes additional comments made from a user to a business and can be omitted given the inclusion of the comments of the reviews from the review data set. The check-in data contains the times a user looked at a particular business. After aggregating the data, a slight negative non-linear relationship can be seen in the data. Thus it can be used as a feature.
+The tip data only includes additional comments made from a user to a business and can be omitted given the inclusion of the comments of the reviews from the review data set. The check-in data contains the times a user looked at a particular business. After aggregating the data, a slight negative non-linear relationship can be seen in the data, qualifying it as a feature.
 Whilst the user data set contains valuable information that show significant correlation with our variable of interest such as the number of weeks since a user joined yelp (see graph below), there are only 20% of the users in the review data set present in the user data set. Therefore, we are unable to construct meaningful averages to fill the data or ignore the missing data points forcing us to omit the data entirely.
 
-```{r yelping since plot, echo = FALSE, warning=FALSE, fig.cap="Graph showing the slight positive relationship between the length of usership and user reviews.", fig.align='center', fig.id=TRUE}
+```{r yelping since plot, echo = FALSE, warning=FALSE, fig.cap="Relationship length of Yelp usership and ratings.", fig.align='center', fig.id=TRUE}
 yelping_since_fancy_plot
 ```
 ```{r data manipulation, warning = FALSE, include = FALSE}
@@ -317,7 +318,7 @@ Our data set contains a small number of parameters relative to a large number of
 | $R^2$ on test data  | 0.54          | 0.53   |0.54    | 0.56   |
 | $R^2$ on training data|0.54         | 0.54   |0.54    | 0.57   |
 
-Ridge and LASSO can shrink the estimators to reduce the variance of the estimators. However, given the large number of observations and relatively small number of parameters, the variance of the OLS estimator is already relatively low. In combination with the cross-validated lambda being very close to zero for both Ridge and LASSO explains why they don't outperform OLS. The small decrease in variance that can be obtained through shrinking is made redundant by the increase in bias
+Ridge and LASSO can shrink the estimators to reduce the variance of the estimators. However, given the large number of observations and relatively small number of parameters, the variance of the OLS estimator is already relatively low. In combination with the cross-validated lambda being very close to zero for both Ridge and LASSO, this explains why they don't outperform OLS. The small decrease in variance that can be obtained through shrinking is made redundant by the increase in bias generated by the shrinkage methods.
 A better performance can be achieved by changing the data format slightly to only indicate the usage of a word without specifying the frequency. This is due to the fact that often used words are prevented from getting too much weight.
 
 Including the text of reviews leads to a significant increase in performance given the relatively large informativeness of some words as shown in the graph of the coefficients for shrinkage estimators.
@@ -325,8 +326,8 @@ Including the text of reviews leads to a significant increase in performance giv
 coef_plot_lasso
 ```
 #### Non-linear models
-Regression trees are unlikely to perform well given that there are over 500 parameters and the low levels of informativeness of each feature. Under these circumstances, a large tree would be required, leading to a high variance and poor performance. Using Random Forests to decrease the variance will lead to poor performance due to the large number of parameters and few good predictors, as evidenced by the fact that only around 12% of features have a an absolute value of the coefficient larger than 0.1.
-Nevertheless, boosting is able to achieve a performance comparable to the shrinkage estimators. This is due to the combination of bagging and learning and the ability to capture non-linear relationships between the variables. Bagging reduces the variance of the estimates by using averages and by letting the estimator explain the previously unexplained data points, a precise estimate can be achieved. By reducing the learning rate, we can achieve a lower MSE due to the prevention of overfitting. 
+Simple regression trees are unlikely to perform well given that there are over 500 parameters, most of which have low levels of informativeness. Under these circumstances, a large tree would be required, leading to a high variance and poor performance. Using Random Forests to decrease the variance will lead to poor performance due to the large number of parameters and few good predictors, as evidenced by the fact that only around 12% of features have a an absolute value of the coefficient larger than 0.1. This would lead to strongly biased trees in cases when only poor predictors are chosen at each node and given the high probability of this happening, the bias is likely to remain. 
+Nevertheless, boosting is able to achieve a performance comparable to the shrinkage estimators. This is due to the combination of bagging, learning and the ability to capture non-linear relationships between the variables. Bagging reduces the variance of the estimates by using averages and by letting the estimator explain the previously unexplained data points, enabling us to achieve a more precise estimate. By reducing the learning rate, we can achieve a lower MSE due to the prevention of overfitting. 
 
 | Performance/Model   | Unpruned Tree|  Boosted Tree |
 |:--------------------|:-------------:|:------:|
